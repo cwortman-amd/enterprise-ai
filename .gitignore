@@ -1,0 +1,38 @@
+# Local environment and secrets
+.env
+*.env
+scripts/.env
+*.pem
+*.key
+*.crt
+*.p12
+certs/
+scripts/certs/
+bloom.yaml
+additional_node_command.txt
+
+# Generated install workspaces and state
+amd-enterprise-ai-install/
+scripts/amd-enterprise-ai-install/
+.state/
+logs/
+results/
+
+# Downloaded release artifacts and binaries
+bloom
+release-enterprise-ai*.tar.gz
+*.log
+waitForLonghorn.log
+
+# Python environments and caches
+.eai-*-venv/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Temporary benchmark configs
+scripts/temp_config_*.yaml
