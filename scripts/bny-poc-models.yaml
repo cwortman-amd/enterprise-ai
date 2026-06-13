@@ -1,0 +1,54 @@
+---
+# Model 1: Meta Llama 3.3 70B Instruct
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMService
+metadata:
+  name: llama-3-3-70b
+  namespace: default
+  labels:
+    poc.bny.com/workload: memory-benchmark
+spec:
+  cacheModel: true
+  model:
+    ref: llama-3-3-70b-model-v11
+  resources:
+    limits:
+      amd.com/gpu: "1"
+    requests:
+      amd.com/gpu: "1"
+---
+# Model 2: Mistral Mixtral 8x22B (MoE, 141B total / 39B active)
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMService
+metadata:
+  name: mixtral-8x22b
+  namespace: default
+  labels:
+    poc.bny.com/workload: memory-benchmark
+spec:
+  cacheModel: true
+  model:
+    ref: mixtral-8x22b-model-v11
+  resources:
+    limits:
+      amd.com/gpu: "8"
+    requests:
+      amd.com/gpu: "8"
+---
+# Model 3: OpenAI GPT-OSS 120B (MoE, 117B total / 5.1B active)
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMService
+metadata:
+  name: gpt-oss-120b
+  namespace: default
+  labels:
+    poc.bny.com/workload: memory-benchmark
+spec:
+  cacheModel: true
+  model:
+    ref: gpt-oss-120b-model
+  resources:
+    limits:
+      amd.com/gpu: "1"
+    requests:
+      amd.com/gpu: "1"

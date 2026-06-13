@@ -1,0 +1,139 @@
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: aim-meta-llama-llama-3-2-1b-instruct-0-8-4
+  name: llama-3-2-1b-mi355x-lat
+spec:
+  gpuSelector:
+    count: 1
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: latency
+  modelName: aim-meta-llama-llama-3-2-1b-instruct-0-8-4
+  precision: fp16
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: meta-llama/Llama-3.2-1B-Instruct
+      size: "3Gi"
+      sourceUri: "hf://meta-llama/Llama-3.2-1B-Instruct"
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: aim-meta-llama-llama-3-2-1b-instruct-0-8-4
+  name: llama-3-2-1b-mi355x-thr
+spec:
+  gpuSelector:
+    count: 1
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: throughput
+  modelName: aim-meta-llama-llama-3-2-1b-instruct-0-8-4
+  precision: fp16
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: meta-llama/Llama-3.2-1B-Instruct
+      size: "3Gi"
+      sourceUri: "hf://meta-llama/Llama-3.2-1B-Instruct"
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: aim-qwen-qwen3-32b-0-8-4
+  name: qwen3-32b-mi355x-lat
+spec:
+  gpuSelector:
+    count: 1
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: latency
+  modelName: aim-qwen-qwen3-32b-0-8-4
+  precision: fp16
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: Qwen/Qwen3-32B
+      size: "65Gi"
+      sourceUri: "hf://Qwen/Qwen3-32B"
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: aim-qwen-qwen3-32b-0-8-4
+  name: qwen3-32b-mi355x-thr
+spec:
+  gpuSelector:
+    count: 1
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: throughput
+  modelName: aim-qwen-qwen3-32b-0-8-4
+  precision: fp16
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: Qwen/Qwen3-32B
+      size: "65Gi"
+      sourceUri: "hf://Qwen/Qwen3-32B"
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: aim-meta-llama-llama-3-3-70b-instruct-0-8-4-preview
+  name: llama-3-3-70b-mi355x-thr
+spec:
+  gpuSelector:
+    count: 1
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: throughput
+  modelName: aim-meta-llama-llama-3-3-70b-instruct-0-8-4-preview
+  precision: fp8
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: amd/Llama-3.3-70B-Instruct-FP8-KV
+      size: "70Gi"
+      sourceUri: "hf://amd/Llama-3.3-70B-Instruct-FP8-KV"
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: aim-mistralai-mixtral-8x22b-instruct-v0-1-0-8-4
+  name: mixtral-8x22b-mi355x-lat
+spec:
+  gpuSelector:
+    count: 8
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: latency
+  modelName: aim-mistralai-mixtral-8x22b-instruct-v0-1-0-8-4
+  precision: fp16
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: mistralai/Mixtral-8x22B-Instruct-v0.1
+      size: "280Gi"
+      sourceUri: "hf://mistralai/Mixtral-8x22B-Instruct-v0.1"
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: aim-mistralai-mixtral-8x22b-instruct-v0-1-0-8-4
+  name: mixtral-8x22b-mi355x-thr
+spec:
+  gpuSelector:
+    count: 8
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: throughput
+  modelName: aim-mistralai-mixtral-8x22b-instruct-v0-1-0-8-4
+  precision: fp16
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: mistralai/Mixtral-8x22B-Instruct-v0.1
+      size: "280Gi"
+      sourceUri: "hf://mistralai/Mixtral-8x22B-Instruct-v0.1"

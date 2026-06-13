@@ -1,0 +1,39 @@
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: gpt-oss-120b-model
+  name: gpt-oss-120b-mi355x-lat
+spec:
+  gpuSelector:
+    count: 1
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: latency
+  modelName: gpt-oss-120b-model
+  precision: fp8
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: openai/gpt-oss-120b
+      size: "240Gi"
+      sourceUri: "hf://openai/gpt-oss-120b"
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: gpt-oss-120b-model
+  name: gpt-oss-120b-mi355x-thr
+spec:
+  gpuSelector:
+    count: 1
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: throughput
+  modelName: gpt-oss-120b-model
+  precision: fp8
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: openai/gpt-oss-120b
+      size: "240Gi"
+      sourceUri: "hf://openai/gpt-oss-120b"

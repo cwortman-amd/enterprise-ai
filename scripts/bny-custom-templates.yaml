@@ -1,0 +1,141 @@
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterModel
+metadata:
+  name: llama-3-3-70b-model-v11
+spec:
+  discovery:
+    autoCreateTemplates: false
+    enabled: false
+  image: docker.io/amdenterpriseai/aim-meta-llama-llama-3-3-70b-instruct:0.11.0
+  runtimeConfigName: default
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterModel
+metadata:
+  name: mixtral-8x22b-model-v11
+spec:
+  discovery:
+    autoCreateTemplates: false
+    enabled: false
+  image: docker.io/amdenterpriseai/aim-mistralai-mixtral-8x22b-instruct-v0-1:0.11.0
+  runtimeConfigName: default
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: llama-3-3-70b-model-v11
+  name: llama-3-3-70b-instruct-mi355x-custom-v11
+spec:
+  gpuSelector:
+    count: 1
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: latency
+  modelName: llama-3-3-70b-model-v11
+  precision: fp8
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: amd/Llama-3.3-70B-Instruct-FP8-KV
+      size: "70Gi"
+      sourceUri: "hf://amd/Llama-3.3-70B-Instruct-FP8-KV"
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: llama-3-3-70b-model-v11
+  name: llama-3-3-70b-instruct-mi355x-custom-thr-v11
+spec:
+  gpuSelector:
+    count: 1
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: throughput
+  modelName: llama-3-3-70b-model-v11
+  precision: fp8
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: amd/Llama-3.3-70B-Instruct-FP8-KV
+      size: "70Gi"
+      sourceUri: "hf://amd/Llama-3.3-70B-Instruct-FP8-KV"
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: mixtral-8x22b-model-v11
+  name: mixtral-8x22b-mi355x-lat-v11
+spec:
+  gpuSelector:
+    count: 8
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: latency
+  modelName: mixtral-8x22b-model-v11
+  precision: fp16
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: mistralai/Mixtral-8x22B-Instruct-v0.1
+      size: "280Gi"
+      sourceUri: "hf://mistralai/Mixtral-8x22B-Instruct-v0.1"
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: mixtral-8x22b-model-v11
+  name: mixtral-8x22b-mi355x-thr-v11
+spec:
+  gpuSelector:
+    count: 8
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: throughput
+  modelName: mixtral-8x22b-model-v11
+  precision: fp16
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: mistralai/Mixtral-8x22B-Instruct-v0.1
+      size: "280Gi"
+      sourceUri: "hf://mistralai/Mixtral-8x22B-Instruct-v0.1"
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: gpt-oss-120b-model
+  name: gpt-oss-120b-mi355x-lat
+spec:
+  gpuSelector:
+    count: 1
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: latency
+  modelName: gpt-oss-120b-model
+  precision: fp8
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: openai/gpt-oss-120b
+      size: "240Gi"
+      sourceUri: "hf://openai/gpt-oss-120b"
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: gpt-oss-120b-model
+  name: gpt-oss-120b-mi355x-thr
+spec:
+  gpuSelector:
+    count: 1
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: throughput
+  modelName: gpt-oss-120b-model
+  precision: fp8
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: openai/gpt-oss-120b
+      size: "240Gi"
+      sourceUri: "hf://openai/gpt-oss-120b"

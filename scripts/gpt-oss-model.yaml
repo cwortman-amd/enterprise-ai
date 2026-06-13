@@ -1,0 +1,9 @@
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterModel
+metadata:
+  name: gpt-oss-120b-model
+spec:
+  image: docker.io/amdenterpriseai/aim-openai-gpt-oss-120b:0.11.0
+  discovery:
+    autoCreateTemplates: false
+    enabled: false

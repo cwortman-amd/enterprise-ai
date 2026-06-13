@@ -1,0 +1,29 @@
+server:
+  type: "vllm"
+  base_url: "http://10.243.110.119"
+  model_name: "mistralai/Mixtral-8x22B-Instruct-v0.1"
+
+tokenizer:
+  pretrained_model_name_or_path: "gpt2"
+
+data:
+  type: "synthetic"
+  input_distribution:
+    type: "fixed"
+    mean: 200
+  output_distribution:
+    type: "fixed"
+    mean: 32
+
+load:
+  type: "concurrent"
+  num_workers: 4
+  stages:
+    - num_requests: 10
+      concurrency_level: 1
+    - num_requests: 20
+      concurrency_level: 4
+
+storage:
+  local_storage:
+    path: "/workspace/reports"

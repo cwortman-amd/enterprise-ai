@@ -1,0 +1,19 @@
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMClusterServiceTemplate
+metadata:
+  labels:
+    aim.silogen.ai/aim-image: aim-meta-llama-llama-3-3-70b-instruct-0-8-4-preview
+  name: llama-3-3-70b-instruct-mi355x-custom
+spec:
+  gpuSelector:
+    count: 1
+    model: MI355X
+    resourceName: amd.com/gpu
+  metric: latency
+  modelName: aim-meta-llama-llama-3-3-70b-instruct-0-8-4-preview
+  precision: fp8
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  modelSources:
+    - name: amd/Llama-3.3-70B-Instruct-FP8-KV
+      size: "70Gi"
+      sourceUri: "hf://amd/Llama-3.3-70B-Instruct-FP8-KV"
