@@ -1,0 +1,78 @@
+# Hugging Face authentication for the download jobs is injected via spec.env
+# referencing the 'hf-token' secret (key: token). The secretKeyRef is marked
+# optional, so applying this manifest works whether or not the secret exists:
+#   - secret present  -> authenticated downloads (higher rate limits, gated repos)
+#   - secret absent   -> unauthenticated downloads (public models only, throttled)
+# Create the secret with:
+#   kubectl create secret generic hf-token -n default --from-literal=token="$HF_TOKEN"
+# (scripts/start.sh creates/refreshes it automatically from .env / HF_TOKEN.)
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMModelCache
+metadata:
+  name: llama-3-3-70b-cache
+  namespace: default
+spec:
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  size: 70Gi
+  sourceUri: hf://amd/Llama-3.3-70B-Instruct-FP8-KV
+  env:
+    - name: HF_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: hf-token
+          key: token
+          optional: true
+    - name: HUGGING_FACE_HUB_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: hf-token
+          key: token
+          optional: true
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMModelCache
+metadata:
+  name: mixtral-8x22b-cache
+  namespace: default
+spec:
+  runtimeConfigName: amd-aim-cluster-runtime-config
+  size: 280Gi
+  sourceUri: hf://mistralai/Mixtral-8x22B-Instruct-v0.1
+  env:
+    - name: HF_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: hf-token
+          key: token
+          optional: true
+    - name: HUGGING_FACE_HUB_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: hf-token
+          key: token
+          optional: true
+---
+apiVersion: aim.silogen.ai/v1alpha1
+kind: AIMModelCache
+metadata:
+  name: openai-gpt-oss-120b
+  namespace: default
+spec:
+  runtimeConfigName: default
+  size: 500Gi
+  sourceUri: hf://openai/gpt-oss-120b
+  modelDownloadImage: gpt-oss-downloader:hf-transfer
+  env:
+    - name: HF_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: hf-token
+          key: token
+          optional: true
+    - name: HUGGING_FACE_HUB_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: hf-token
+          key: token
+          optional: true
+

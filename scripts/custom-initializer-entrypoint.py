@@ -22,11 +22,20 @@ dest_path = sys.argv[2]
 # Remove hf:// prefix
 repo_id = src_uri.replace("hf://", "")
 
+# Keep the Xet dedup chunk cache on the same (large, network-backed) cache volume as
+# the destination, not the container's small ephemeral filesystem. Otherwise the chunk
+# cache can fill ephemeral storage and the pod is evicted mid-download.
+dest_parent = os.path.dirname(os.path.normpath(dest_path)) or dest_path
+xet_cache_dir = os.path.join(dest_parent, ".xet-cache")
+os.makedirs(xet_cache_dir, exist_ok=True)
+os.environ.setdefault("HF_XET_CACHE", xet_cache_dir)
+
 print(f"Custom downloader: downloading {repo_id} to {dest_path}", flush=True)
 print(
     "Custom downloader: "
     f"HF_XET_NUM_CONCURRENT_RANGE_GETS={os.getenv('HF_XET_NUM_CONCURRENT_RANGE_GETS')} "
     f"HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY={os.getenv('HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY')} "
+    f"HF_XET_CACHE={os.getenv('HF_XET_CACHE')} "
     "max_workers=1",
     flush=True,
 )

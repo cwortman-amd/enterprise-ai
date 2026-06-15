@@ -117,7 +117,7 @@ spec:
   runtimeConfigName: amd-aim-cluster-runtime-config
   modelSources:
     - name: openai/gpt-oss-120b
-      size: "240Gi"
+      size: "500Gi"
       sourceUri: "hf://openai/gpt-oss-120b"
 ---
 apiVersion: aim.silogen.ai/v1alpha1
@@ -137,5 +137,5 @@ spec:
   runtimeConfigName: amd-aim-cluster-runtime-config
   modelSources:
     - name: openai/gpt-oss-120b
-      size: "240Gi"
+      size: "500Gi"
       sourceUri: "hf://openai/gpt-oss-120b"

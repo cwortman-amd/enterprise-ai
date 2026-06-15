@@ -1,6 +1,6 @@
 # AMD Enterprise AI — Installation Guide
 
-BNY MI355X POC | AMD Enterprise AI Reference Stack
+MI355X POC | AMD Enterprise AI Reference Stack
 
 This guide is a complete operator-friendly walkthrough for installing the AMD Enterprise AI Reference Stack. It is based on the [official documentation](https://enterprise-ai.docs.amd.com/en/latest/platform-infrastructure/on-premises-installation.html) and automated via the `scripts/install.sh` script.
 
@@ -20,7 +20,7 @@ This guide is a complete operator-friendly walkthrough for installing the AMD En
 | :--- | :--- | :--- |
 | GPU | MI300X / MI325X / MI350X / MI355X | 8x MI355X |
 | CPU | 20 cores | 2x AMD Turin |
-| Raw NVMe | 1 unformatted drive | Auto-detected |
+| Storage | 1 unformatted drive (raw NVMe), 2-4 TB | Auto-detected |
 
 > [!NOTE]
 > MI355X is next-generation hardware. AIM Engine templates are currently optimized for MI300X only. Models must be deployed with `allowUnoptimized: true`. See [QUICKSTART.md](QUICKSTART.md).
@@ -57,9 +57,13 @@ Without authentication, Docker Hub rate limits cause `ImagePullBackOff` errors.
 Create a `.env` file in the `scripts/` directory:
 
 ```env
-# Required
+# Required for install (avoids Docker Hub rate limits / ImagePullBackOff)
 DOCKERHUB_USER=your_dockerhub_username
 DOCKERHUB_TOKEN=your_dockerhub_pat
+
+# Required to download gated/hosted models when serving (start.sh / check.sh)
+HF_TOKEN=hf_your_token
+# HUGGING_FACE_HUB_TOKEN=hf_your_token   # alternative variable name; either is accepted
 
 # Optional overrides
 # DISK_OVERRIDE=/dev/nvme1n1
@@ -72,8 +76,18 @@ DOCKERHUB_TOKEN=your_dockerhub_pat
 
 Do not commit `scripts/.env`. If you need a shareable template, create an example file with placeholder values only.
 
+### Hugging Face Token
+
+Required to download gated or hosted models (e.g., Llama 3.3 70B, Mixtral, GPT-OSS) when serving them with `scripts/start.sh` or `scripts/check.sh`.
+
+- Generate a **read** token at <https://huggingface.co/settings/tokens> and accept each model's license on its Hugging Face page.
+- `scripts/start.sh` reads `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) and validates access **before** starting a download, so an invalid or missing token fails fast.
+- Provide it in either of these ways:
+  - Add `HF_TOKEN=hf_...` to `scripts/.env` (loaded automatically by the scripts), or export it in your shell.
+  - Add it via the **AI Workbench UI → Secrets** (key `HUGGING_FACE_HUB_TOKEN`) for UI-driven deployments.
+
 > [!NOTE]
-> A **Hugging Face token** is NOT needed during install. Add it later via the AI Workbench UI to deploy gated models (e.g., Llama).
+> A Hugging Face token is **not** required to install the platform itself — only to download gated/hosted model weights. You can add it during install (in `scripts/.env`) or later before the first model start.
 
 ---
 
@@ -187,9 +201,9 @@ Required for gated models (Llama, Gemma, etc.):
 ## 5. Deploying Models
 
 > [!IMPORTANT]
-> On MI355X clusters, use this repository's `scripts/start.sh` flow for normal POC runs. It applies custom MI355X `AIMClusterServiceTemplate` resources from `scripts/bny-custom-templates.yaml` before creating `AIMService` resources. If you create ad hoc AIMService manifests outside that flow and do not provide MI355X templates, include `allowUnoptimized: true` or the service may remain stuck in **Pending**.
+> On MI355X clusters, use this repository's `scripts/start.sh` flow for normal POC runs. It applies custom MI355X `AIMClusterServiceTemplate` resources from `scripts/custom-templates.yaml` before creating `AIMService` resources. If you create ad hoc AIMService manifests outside that flow and do not provide MI355X templates, include `allowUnoptimized: true` or the service may remain stuck in **Pending**.
 
-See **[QUICKSTART.md](QUICKSTART.md)** for complete deployment manifests for all BNY POC benchmark models.
+See **[QUICKSTART.md](QUICKSTART.md)** for complete deployment manifests for all POC benchmark models.
 
 ---
 
@@ -236,7 +250,31 @@ cat amd-enterprise-ai-install/logs/debug/preflight.*.txt
 
 ---
 
-## 7. Reference Links
+## 7. Next Steps
+
+With the platform installed and verified, continue through the operational loop:
+
+1. **Start a model** — deploy and serve a model with `scripts/start.sh`. See **[QUICKSTART.md](QUICKSTART.md)**.
+2. **Verify serving** — run the end-to-end sanity check (`/v1/models` + chat completion) with `scripts/check.sh`. See **[CHECK.md](CHECK.md)**.
+3. **Benchmark** — run the performance sweep and accuracy evaluation with `scripts/benchmark.sh`. See **[BENCHMARK.md](BENCHMARK.md)**.
+4. **Troubleshoot** — if any step stalls or fails, use `scripts/debug.sh` and the state-driven flow in **[DEBUG.md](DEBUG.md)**.
+
+To tear down or reset the environment, use `scripts/uninstall.sh`.
+
+---
+
+## 8. Further Reading
+
+### In This Repository
+
+| Document | Purpose |
+| :--- | :--- |
+| [QUICKSTART.md](QUICKSTART.md) | Start models and run the POC workloads |
+| [CHECK.md](CHECK.md) | Sanity-check model serving end to end |
+| [BENCHMARK.md](BENCHMARK.md) | Performance sweep and accuracy evaluation |
+| [DEBUG.md](DEBUG.md) | Detailed troubleshooting and diagnostics |
+
+### External References
 
 | Resource | Link |
 | :--- | :--- |

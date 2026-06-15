@@ -1,0 +1,11 @@
+# Python dependencies for the custom GPT-OSS model download image
+# (Dockerfile.custom-download). Installed into the KServe storage
+# initializer's runtime venv (/prod_venv) so the stock initializer can
+# use Xet-accelerated, high-throughput Hugging Face downloads.
+#
+# huggingface_hub >=0.34 is required for the Xet integration to match
+# modern hf_xet; older versions report "hf_xet not installed" and fall
+# back to plain HTTP.
+huggingface_hub[hf_xet]>=0.34
+hf_xet>=1.1
+hf_transfer>=0.1.8

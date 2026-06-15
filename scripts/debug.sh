@@ -91,15 +91,50 @@ operator_logs_for() {
     | tail -30 || true
 }
 
-# --- Helper: auto-detect active ClusterIP endpoint ---
+# --- Helper: auto-detect active serving endpoint base URL ---
+# Prefers the raw deploy.sh track (an available "<model>-aim" Deployment reached
+# via its Service ClusterIP), then falls back to the operator start.sh track (a
+# Ready InferenceService predictor ClusterIP). Echoes a full base URL
+# (http://ip[:port]); empty if nothing is serving.
 detect_endpoint() {
-  kubectl get inferenceservice -n default -o json 2>/dev/null \
+  local ns="${NAMESPACE:-default}" ip port
+
+  # 1. Raw deploy.sh track: an available "*-aim" Deployment and its Service.
+  local dep
+  dep=$(kubectl get deploy -n "$ns" -o json 2>/dev/null \
+    | jq -r '.items[]
+        | select((.metadata.name | endswith("-aim")) and ((.status.availableReplicas // 0) >= 1))
+        | .metadata.name' 2>/dev/null | head -n1 || true)
+  if [[ -n "$dep" ]]; then
+    ip=$(kubectl get svc "$dep" -n "$ns" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+    if [[ -n "$ip" && "$ip" != "None" ]]; then
+      port=$(kubectl get svc "$dep" -n "$ns" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
+      echo "http://${ip}:${port:-80}"
+      return 0
+    fi
+  fi
+
+  # 2. Operator start.sh track: a Ready InferenceService predictor ClusterIP.
+  local isvc
+  isvc=$(kubectl get inferenceservice -n "$ns" -o json 2>/dev/null \
     | jq -r '.items[] | select(.status.conditions[]? |
         select(.type=="Ready" and .status=="True")) | .metadata.name' \
-    2>/dev/null | head -n1 | xargs -I{} \
-    kubectl get svc "{}-predictor" -n default \
-      -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true
+    2>/dev/null | head -n1 || true)
+  if [[ -n "$isvc" ]]; then
+    ip=$(kubectl get svc "${isvc}-predictor" -n "$ns" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+    if [[ -n "$ip" && "$ip" != "None" ]]; then
+      echo "http://${ip}"
+      return 0
+    fi
+  fi
 }
+
+# =============================================================================
+# Default mode: with no arguments, run the full diagnostic (--all).
+# =============================================================================
+if [[ $# -eq 0 ]]; then
+  set -- --all
+fi
 
 # =============================================================================
 # --help
@@ -113,9 +148,10 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   printf "    %-28s %s\n" "-l, --list [namespace]"   "List all AIMServices, InferenceServices, models, templates"
   printf "    %-28s %s\n" "-g, --gpu"                "GPU node capacity, per-pod allocation, ROCm info"
   printf "    %-28s %s\n" "-c, --cluster"            "Cluster health: non-running pods, operator errors, events"
+  printf "    %-28s %s\n" "-m, --cache [name] [ns]"  "AIMModelCache download deep-dive: job backoff, failed-pod logs, stall-vs-progress, HF token, Xet"
   printf "    %-28s %s\n" "-p, --portal"             "Probe AIRM + AIWB + Keycloak: URLs, credentials, pod status"
   printf "    %-28s %s\n" "-e, --endpoint [url]"     "Probe inference endpoint: smoke test, latency (auto-detects)"
-  printf "    %-28s %s\n" "-a, --all [svc] [ns]"     "Run ALL modes in sequence (auto-detects service if omitted)"
+  printf "    %-28s %s\n" "-a, --all [svc] [ns]"     "Run ALL modes in sequence (auto-detects service if omitted; DEFAULT when no args)"
   printf "    %-28s %s\n" "-h, --help"               "Show this help"
   echo ""
   echo -e "  ${BOLD}SERVICE-LEVEL STEPS${RESET}  (run as:  $0 <service-name> [namespace])"
@@ -145,12 +181,15 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   echo "    $0 -l default"
   echo "    $0 -g"
   echo "    $0 -c"
+  echo "    $0 -m"
+  echo "    $0 -m openai-gpt-oss-120b"
   echo "    $0 -p"
   echo "    $0 -e"
   echo "    $0 -e http://10.243.213.135"
-  echo "    $0 -a"
-  echo "    $0 -a gpt-oss-120b"
-  echo "    $0 -a gpt-oss-120b default"
+    echo "    $0                         # no args = --all (full diagnostic)"
+    echo "    $0 -a"
+    echo "    $0 -a gpt-oss-120b"
+    echo "    $0 -a gpt-oss-120b default"
   echo ""
   echo -e "  ${DIM}Docs: https://enterprise-ai.docs.amd.com/en/latest/aim-engine/admin/troubleshooting.html${RESET}"
   echo ""
@@ -190,6 +229,7 @@ if [[ "${1:-}" == "--all" || "${1:-}" == "-a" ]]; then
   run_section -l
   run_section -g
   run_section -c
+  run_section -m
   run_section -p
   run_section -e
   if [[ -n "$ALL_SVC" ]]; then
@@ -618,10 +658,9 @@ if [[ "${1:-}" == "--endpoint" || "${1:-}" == "-e" ]]; then
   header "Inference Endpoint Probe"
 
   if [[ -z "$TARGET" ]]; then
-    info "No URL provided — auto-detecting from cluster..."
-    SVC_IP=$(detect_endpoint)
-    if [[ -n "$SVC_IP" ]]; then
-      TARGET="http://${SVC_IP}"
+    info "No URL provided — auto-detecting from cluster (deploy.sh raw track preferred)..."
+    TARGET=$(detect_endpoint)
+    if [[ -n "$TARGET" ]]; then
       info "Detected endpoint: ${TARGET}"
     else
       error "Could not auto-detect an active serving endpoint."
@@ -713,6 +752,395 @@ if [[ "${1:-}" == "--endpoint" || "${1:-}" == "-e" ]]; then
   AVG_MS=$(( TOTAL_MS / 5 ))
   ok "Avg: ${AVG_MS}ms   Min: ${MIN_MS}ms   Max: ${MAX_MS}ms"
 
+  echo ""
+  exit 0
+fi
+
+# =============================================================================
+# --cache  — AIMModelCache download deep-dive
+#
+# Root-causes model cache download failures that otherwise surface only as a
+# generic "stalled" / "Failed" status. For each cache it reports:
+#   - AIMModelCache status + conditions (StorageReady / Progressing / Failure)
+#   - The owning download Job: backoffLimit, failed/active counts, BackoffLimitExceeded
+#   - Every download pod (current + failed/terminated) with phase, restarts,
+#     terminated reason + exit code, and waiting reason (e.g. ImagePullBackOff)
+#   - Logs from the current pod AND failed/previous pods, scanned for known
+#     failure signatures (image pull, "too large", hf_xet, 401/403/429, ENOSPC, OOM)
+#   - Progress sampling (du/df sampled twice) to distinguish a real stall from
+#     a slow-but-moving download
+#   - PVC + Longhorn volume health, HF token presence, downloader image presence
+# =============================================================================
+if [[ "${1:-}" == "--cache" || "${1:-}" == "-m" ]]; then
+  CACHE_NAME="${2:-}"
+  CACHE_NS="${3:-default}"
+
+  header "AIMModelCache — Download Diagnostics  (ns: ${CACHE_NS})"
+
+  # Resolve target cache list (specific name, or all caches in the namespace)
+  if [[ -n "$CACHE_NAME" ]]; then
+    CACHE_TARGETS="$CACHE_NAME"
+  else
+    CACHE_TARGETS=$(kubectl get aimmodelcache -n "$CACHE_NS" \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+  fi
+
+  if [[ -z "$CACHE_TARGETS" ]]; then
+    warn "No AIMModelCache resources found in namespace '${CACHE_NS}'."
+    info "List caches: kubectl get aimmodelcache -A"
+    exit 0
+  fi
+
+  # --- Scan a pod's logs for known failure signatures and map to a fix ---
+  scan_log_signatures() {
+    local logtext="$1"
+    [[ -z "$logtext" ]] && return
+    local lc; lc=$(echo "$logtext" | tr '[:upper:]' '[:lower:]')
+    if echo "$lc" | grep -q "too large to be downloaded using the regular download"; then
+      fail   "Signature: large file blocked on plain HTTP (hf_xet/hf_transfer not active)"
+      fix    "The downloader venv (/prod_venv) must have a compatible huggingface_hub + hf_xet."
+      fix    "Rebuild: ./scripts/build-gpt-oss-downloader.sh  (installs requirements-downloader.txt into /prod_venv)"
+    fi
+    if echo "$lc" | grep -q "hf_xet.*not installed\|xet storage is enabled.*not installed"; then
+      warn   "Signature: hf_xet present but not engaged by huggingface_hub → falling back to HTTP"
+      fix    "Ensure huggingface_hub>=0.34 is installed into /prod_venv (not /usr/local)."
+    fi
+    if echo "$lc" | grep -qE "imagepullbackoff|errimagepull|manifest unknown|not found: manifest"; then
+      fail   "Signature: download image could not be pulled"
+      fix    "Build + import the image: ./scripts/build-gpt-oss-downloader.sh"
+      fix    "Verify in containerd: sudo ${RKE2_CTR:-/var/lib/rancher/rke2/bin/ctr} -a ${RKE2_SOCK:-/run/k3s/containerd/containerd.sock} -n k8s.io images ls | grep downloader"
+    fi
+    if echo "$lc" | grep -qE "401|403|unauthorized|gated|access to model|restricted"; then
+      fail   "Signature: Hugging Face auth/authorization error (gated or private repo)"
+      fix    "Set a valid HF_TOKEN with access to the repo (see HF token check below)."
+    fi
+    if echo "$lc" | grep -qE "429|rate limit|too many requests"; then
+      warn   "Signature: Hugging Face rate limiting (unauthenticated or heavy traffic)"
+      fix    "Set HF_TOKEN for higher rate limits; retry."
+    fi
+    if echo "$lc" | grep -qE "no space left|enospc|disk quota|storagesizeerror"; then
+      fail   "Signature: ran out of cache storage"
+      fix    "Increase the AIMModelCache 'size' and recreate the cache."
+    fi
+    if echo "$lc" | grep -qE "oomkilled|out of memory|killed"; then
+      warn   "Signature: possible OOM kill of the download container"
+      fix    "Increase the download job memory or reduce concurrency."
+    fi
+    if echo "$lc" | grep -qE "connection reset|timed out|timeout|temporary failure in name resolution|tls handshake"; then
+      warn   "Signature: network instability talking to the model source"
+      fix    "Check egress/DNS to huggingface.co and the Xet CDN; retry."
+    fi
+  }
+
+  for C in $CACHE_TARGETS; do
+    echo ""
+    echo -e "${BOLD}${CYAN}$(printf '=%.0s' $(seq 1 64))${RESET}"
+    echo -e "${BOLD}  Cache: ${C}${RESET}"
+    echo -e "${BOLD}${CYAN}$(printf '=%.0s' $(seq 1 64))${RESET}"
+
+    if ! kubectl get aimmodelcache "$C" -n "$CACHE_NS" >/dev/null 2>&1; then
+      error "AIMModelCache '${C}' not found in namespace '${CACHE_NS}'."
+      continue
+    fi
+
+    # --- 1. Cache status + spec ---
+    section "1. AIMModelCache — Status & Spec"
+    kubectl get aimmodelcache "$C" -n "$CACHE_NS" 2>/dev/null
+    if $HAS_JQ; then
+      kubectl get aimmodelcache "$C" -n "$CACHE_NS" -o json 2>/dev/null | jq -r '
+        "  Status        : \(.status.status // "-")\n" +
+        "  Source URI    : \(.spec.sourceUri // "-")\n" +
+        "  Requested size: \(.spec.size // "-")\n" +
+        "  Download image: \(.spec.modelDownloadImage // "(operator default)")\n" +
+        "  PVC           : \(.status.persistentVolumeClaim // "-")"' 2>/dev/null || true
+      echo ""
+      info "Conditions:"
+      kubectl get aimmodelcache "$C" -n "$CACHE_NS" -o json 2>/dev/null \
+        | jq -r '.status.conditions[]? | "  \(.type)=\(.status)  reason=\(.reason // "-")  \(.message // "")"' \
+        2>/dev/null || true
+    fi
+
+    PVC=$(kubectl get aimmodelcache "$C" -n "$CACHE_NS" \
+      -o jsonpath='{.status.persistentVolumeClaim}' 2>/dev/null || true)
+    SRC_URI=$(kubectl get aimmodelcache "$C" -n "$CACHE_NS" \
+      -o jsonpath='{.spec.sourceUri}' 2>/dev/null || true)
+    DL_IMAGE=$(kubectl get aimmodelcache "$C" -n "$CACHE_NS" \
+      -o jsonpath='{.spec.modelDownloadImage}' 2>/dev/null || true)
+
+    # --- 2. Download Job: backoff / failures ---
+    section "2. Download Job — Retry Budget & Status"
+    JOB="${C}-cache-download"
+    if kubectl get job "$JOB" -n "$CACHE_NS" >/dev/null 2>&1; then
+      if $HAS_JQ; then
+        kubectl get job "$JOB" -n "$CACHE_NS" -o json 2>/dev/null | jq -r '
+          "  backoffLimit  : \(.spec.backoffLimit // "-")  (job fails permanently after this many pod failures)\n" +
+          "  active        : \(.status.active // 0)\n" +
+          "  succeeded     : \(.status.succeeded // 0)\n" +
+          "  failed        : \(.status.failed // 0)\n" +
+          "  startTime     : \(.status.startTime // "-")"' 2>/dev/null || true
+        JOB_FAILED_COND=$(kubectl get job "$JOB" -n "$CACHE_NS" -o json 2>/dev/null \
+          | jq -r '.status.conditions[]? | select(.type=="Failed") | "\(.reason): \(.message)"' 2>/dev/null || true)
+        if [[ -n "$JOB_FAILED_COND" ]]; then
+          echo ""
+          fail "Job has FAILED → ${JOB_FAILED_COND}"
+          [[ "$JOB_FAILED_COND" == *BackoffLimitExceeded* ]] && \
+            fix "Retry budget exhausted. Fix the root cause below, then delete + recreate the cache."
+        fi
+      else
+        kubectl get job "$JOB" -n "$CACHE_NS" 2>/dev/null
+      fi
+    else
+      warn "No download Job '${JOB}' found (cache may already be Available, or not started)."
+    fi
+
+    # --- 3. Download pods: current + failed history ---
+    section "3. Download Pods — Current & Failed History"
+    DL_PODS=$(kubectl get pods -n "$CACHE_NS" \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+      | grep "^${C}-cache-download" || true)
+    if [[ -z "$DL_PODS" ]]; then
+      warn "No download pods found for cache '${C}'."
+    fi
+
+    RUNNING_POD=""
+    for P in $DL_PODS; do
+      PHASE=$(kubectl get pod "$P" -n "$CACHE_NS" -o jsonpath='{.status.phase}' 2>/dev/null || echo "?")
+      RESTARTS=$(kubectl get pod "$P" -n "$CACHE_NS" -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || echo "?")
+      WAIT_REASON=$(kubectl get pod "$P" -n "$CACHE_NS" -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || true)
+      TERM_REASON=$(kubectl get pod "$P" -n "$CACHE_NS" -o jsonpath='{.status.containerStatuses[0].state.terminated.reason}' 2>/dev/null || true)
+      TERM_EXIT=$(kubectl get pod "$P" -n "$CACHE_NS" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || true)
+      LAST_TERM=$(kubectl get pod "$P" -n "$CACHE_NS" -o jsonpath='{.status.containerStatuses[0].lastState.terminated.reason}' 2>/dev/null || true)
+      DETAIL="phase=${PHASE} restarts=${RESTARTS}"
+      [[ -n "$WAIT_REASON" ]] && DETAIL="${DETAIL} waiting=${WAIT_REASON}"
+      [[ -n "$TERM_REASON" ]] && DETAIL="${DETAIL} terminated=${TERM_REASON}(exit=${TERM_EXIT})"
+      [[ -n "$LAST_TERM" ]]   && DETAIL="${DETAIL} lastTerminated=${LAST_TERM}"
+      case "$PHASE" in
+        Running)   ok   "${P}  ${DETAIL}"; RUNNING_POD="$P" ;;
+        Succeeded) ok   "${P}  ${DETAIL}" ;;
+        Failed)    fail "${P}  ${DETAIL}" ;;
+        *)         warn "${P}  ${DETAIL}" ;;
+      esac
+    done
+
+    # --- 4. Logs + signature scan (failed pods first, then current) ---
+    section "4. Logs & Failure-Signature Scan"
+    for P in $DL_PODS; do
+      PHASE=$(kubectl get pod "$P" -n "$CACHE_NS" -o jsonpath='{.status.phase}' 2>/dev/null || echo "?")
+      [[ "$PHASE" == "Running" || "$PHASE" == "Failed" || "$PHASE" == "Error" ]] || continue
+      echo ""
+      info "── ${P} (${PHASE}) — last 15 log lines ──"
+      LOGS=$(kubectl logs "$P" -n "$CACHE_NS" --tail=15 2>/dev/null || true)
+      # Include previous container logs if the pod restarted
+      PREV_LOGS=$(kubectl logs "$P" -n "$CACHE_NS" --previous --tail=15 2>/dev/null || true)
+      if [[ -n "$LOGS" ]]; then echo "$LOGS" | indent; else dim "  (no current logs)"; fi
+      if [[ -n "$PREV_LOGS" ]]; then echo ""; dim "  (previous container instance):"; echo "$PREV_LOGS" | indent; fi
+      scan_log_signatures "${LOGS}
+${PREV_LOGS}"
+    done
+
+    # --- 5. Progress sampling (stall vs slow) ---
+    if [[ -n "$RUNNING_POD" ]]; then
+      section "5. Progress Sampling (throughput, stall vs slow)"
+      # Count both total cache bytes AND the sum of in-flight .incomplete files.
+      # Xet/HF download in bursts with inter-chunk pauses, so we take a longer
+      # window and a confirmation sample before declaring a true stall.
+      read_bytes() {
+        kubectl exec "$RUNNING_POD" -n "$CACHE_NS" 2>/dev/null -- sh -c '
+          tot=$(du -sb /cache 2>/dev/null | cut -f1)
+          inc=$(du -cb /cache/.cache/huggingface/download/*.incomplete 2>/dev/null | tail -1 | cut -f1)
+          echo "${tot:-0} ${inc:-0}"' 2>/dev/null || echo "0 0"
+      }
+      sample_window() {
+        local secs="$1" b0 b1 t0 i0 t1 i1
+        b0=$(read_bytes); t0=${b0% *}; i0=${b0#* }
+        sleep "$secs"
+        b1=$(read_bytes); t1=${b1% *}; i1=${b1#* }
+        # movement = larger of total-dir growth or incomplete-file growth
+        local dt=$(( ${t1:-0} - ${t0:-0} )) di=$(( ${i1:-0} - ${i0:-0} ))
+        local mv=$dt; [[ $di -gt $mv ]] && mv=$di
+        echo "$mv $t0 $t1"
+      }
+      info "Sampling download throughput over ~20s (with confirmation on no-growth)..."
+      read MV T0 T1 < <(sample_window 20)
+      RATE=$(( MV / 20 / 1024 ))  # KB/s
+      bullet "Cache total: $(( ${T0:-0}/1024/1024 )) MB → $(( ${T1:-0}/1024/1024 )) MB"
+      bullet "Movement: $(( MV/1024/1024 )) MB in 20s  (~${RATE} KB/s)"
+      if [[ "$MV" -gt 0 ]]; then
+        if [[ "$RATE" -lt 5120 ]]; then
+          warn "Download is MOVING but SLOW (~${RATE} KB/s ≈ $(( RATE/1024 )) MB/s)."
+          bullet "A multi-hundred-GB model at this rate can take many hours and may trip watchdogs."
+          fix "Set HF_TOKEN (higher rate limits) and confirm hf_xet/hf_transfer is active in /prod_venv."
+        else
+          ok "Download is MOVING at ~$(( RATE/1024 )) MB/s. Healthy — let it run."
+        fi
+      else
+        # Confirm with a second, longer window before calling it stalled
+        warn "No growth in first window — confirming over another 20s..."
+        read MV2 _ _ < <(sample_window 20)
+        if [[ "$MV2" -gt 0 ]]; then
+          ok "Movement resumed (+$(( MV2/1024/1024 )) MB) — burst-y download, not stalled."
+        else
+          fail "No byte growth across two 20s windows — download appears STALLED."
+          fix "Inspect the running pod logs above for network/auth/rate-limit signatures."
+          fix "Check egress to huggingface.co + Xet CDN; verify HF_TOKEN; consider recreating the cache."
+        fi
+      fi
+      echo ""
+      info "Filesystem usage on cache volume:"
+      kubectl exec "$RUNNING_POD" -n "$CACHE_NS" 2>/dev/null -- sh -c 'df -h /cache 2>/dev/null | tail -1' | indent || true
+      info "In-flight (.incomplete) files:"
+      kubectl exec "$RUNNING_POD" -n "$CACHE_NS" 2>/dev/null -- sh -c 'ls -la /cache/.cache/huggingface/download/*.incomplete 2>/dev/null | tail -6' | indent || dim "  (none / not using local-dir staging)"
+    fi
+
+    # --- 6. PVC + Longhorn volume health ---
+    section "6. Storage — PVC & Longhorn Volume"
+    if [[ -n "$PVC" ]]; then
+      kubectl get pvc "$PVC" -n "$CACHE_NS" 2>/dev/null | indent || warn "PVC '${PVC}' not found."
+      PV=$(kubectl get pvc "$PVC" -n "$CACHE_NS" -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)
+      if [[ -n "$PV" ]]; then
+        kubectl get volumes.longhorn.io "$PV" -n longhorn-system 2>/dev/null \
+          -o custom-columns="VOL:.metadata.name,STATE:.status.state,ROBUST:.status.robustness" | indent \
+          || dim "  (Longhorn volume info unavailable)"
+      fi
+    else
+      warn "No PVC bound yet (StorageReady may be False)."
+    fi
+
+    # --- 7. HF token presence ---
+    section "7. Hugging Face Token"
+    HF_ENV=$(kubectl get pods -n "$CACHE_NS" -o jsonpath="{range .items[*]}{.metadata.name}{'='}{.spec.containers[*].env[?(@.name=='HF_TOKEN')].name}{'\n'}{end}" 2>/dev/null \
+      | grep "^${C}-cache-download" | grep -c "HF_TOKEN" || true)
+    if [[ "${HF_ENV:-0}" -gt 0 ]]; then
+      ok "HF_TOKEN is injected into the download pod env."
+    else
+      warn "HF_TOKEN not detected on the download pod."
+      bullet "Public models still download (rate-limited); gated/private models will 401/403."
+      fix "Provide a token (e.g. via the cluster HF secret / .env) for gated models and higher rate limits."
+    fi
+
+    # --- 8. Downloader image presence (custom image only) ---
+    if [[ -n "$DL_IMAGE" ]]; then
+      section "8. Custom Downloader Image"
+      info "Cache requests image: ${DL_IMAGE}"
+      RKE2_CTR="${RKE2_CTR:-/var/lib/rancher/rke2/bin/ctr}"
+      RKE2_SOCK="${RKE2_SOCK:-/run/k3s/containerd/containerd.sock}"
+      if [[ -x "$RKE2_CTR" && -S "$RKE2_SOCK" ]]; then
+        IMG_HIT=$(sudo "$RKE2_CTR" --address "$RKE2_SOCK" -n k8s.io images ls 2>/dev/null \
+          | grep -i "${DL_IMAGE%%:*}" || true)
+        if [[ -n "$IMG_HIT" ]]; then
+          ok "Image present in RKE2 containerd:"; echo "$IMG_HIT" | awk '{print "    "$1}'
+        else
+          fail "Image '${DL_IMAGE}' NOT found in RKE2 containerd → pods will ImagePullBackOff."
+          fix "Build + import: ./scripts/build-gpt-oss-downloader.sh"
+        fi
+      else
+        dim "  (RKE2 ctr/socket not accessible from here — skipping containerd check)"
+      fi
+    fi
+
+    # --- 9. Recent events for this cache ---
+    section "9. Recent Events"
+    kubectl get events -n "$CACHE_NS" --sort-by=.lastTimestamp 2>/dev/null \
+      | grep -i "${C}" | tail -15 | indent || dim "  (no recent events)"
+
+    # --- 10. Verification checklist (known Xet / GPT-OSS download failure modes) ---
+    section "10. Verification Checklist — Symptom & Fix"
+    # Helper: print a PASS line, or a FAIL/WARN line followed by Symptom + Fix.
+    check_pass() { ok "$1"; }
+    check_warn() { warn "$1"; bullet "Symptom: $2"; fix "$3"; }
+    check_fail() { fail "$1"; bullet "Symptom: $2"; fix "$3"; }
+
+    # (a) Cache reached Available
+    CACHE_STATUS=$(kubectl get aimmodelcache "$C" -n "$CACHE_NS" -o jsonpath='{.status.status}' 2>/dev/null || true)
+    case "$CACHE_STATUS" in
+      Available) check_pass "Cache status is Available (download complete)." ;;
+      Failed)    check_fail "Cache status is Failed." \
+                   "Download job failed; status stuck at Failed." \
+                   "Review steps 2-4 for the root cause, then delete + recreate the cache." ;;
+      *)         check_warn "Cache status is '${CACHE_STATUS:-unknown}' (not yet Available)." \
+                   "Download still in progress or blocked." \
+                   "Watch step 5 throughput; if zero progress, inspect step 4 logs." ;;
+    esac
+
+    # (b) Download Job retry budget not exhausted
+    if [[ -n "${JOB_FAILED_COND:-}" && "${JOB_FAILED_COND}" == *BackoffLimitExceeded* ]]; then
+      check_fail "Download Job exhausted its backoffLimit." \
+        "Job condition 'BackoffLimitExceeded'; operator stops creating new download pods." \
+        "Fix the underlying cause below, then delete + recreate the cache to reset the Job."
+    else
+      check_pass "Download Job retry budget not exhausted."
+    fi
+
+    # Custom-image (Xet) caches: verify the image-level prerequisites that the
+    # operator's injected env/entrypoint would otherwise defeat.
+    if [[ -n "$DL_IMAGE" ]]; then
+      # (c) Downloader image present in the cluster runtime
+      RKE2_CTR="${RKE2_CTR:-/var/lib/rancher/rke2/bin/ctr}"
+      RKE2_SOCK="${RKE2_SOCK:-/run/k3s/containerd/containerd.sock}"
+      if [[ -x "$RKE2_CTR" && -S "$RKE2_SOCK" ]]; then
+        # Capture (don't use grep -q) to avoid SIGPIPE failing the pipeline under pipefail.
+        IMG_PRESENT=$(sudo "$RKE2_CTR" --address "$RKE2_SOCK" -n k8s.io images ls 2>/dev/null \
+          | grep -i "${DL_IMAGE%%:*}" || true)
+        if [[ -n "$IMG_PRESENT" ]]; then
+          check_pass "Downloader image '${DL_IMAGE}' present in RKE2 containerd."
+        else
+          check_fail "Downloader image '${DL_IMAGE}' missing from RKE2 containerd." \
+            "Download pods sit in ImagePullBackOff; no bytes written; looks like a stall." \
+            "Build + import: ./scripts/build-gpt-oss-downloader.sh"
+        fi
+      else
+        dim "  (skipping containerd image check — ctr/socket not accessible)"
+      fi
+
+      # (d) Deep image check: hf_xet installed in /prod_venv AND Xet survives the
+      #     operator-injected HF_HUB_DISABLE_XET=1 (i.e. sitecustomize.py works).
+      if command -v docker >/dev/null 2>&1 && docker image inspect "$DL_IMAGE" >/dev/null 2>&1; then
+        XET_PROBE=$(docker run --rm -e HF_HUB_DISABLE_XET=1 --entrypoint sh "$DL_IMAGE" -c \
+          '/prod_venv/bin/python -c "import os; from huggingface_hub.utils._runtime import is_xet_available; print(\"XET_OK\" if (is_xet_available() and os.environ.get(\"HF_HUB_DISABLE_XET\") is None) else \"XET_OFF\")"' \
+          2>/dev/null | tail -1 || true)
+        if [[ "$XET_PROBE" == "XET_OK" ]]; then
+          check_pass "Image has Xet active in /prod_venv and clears HF_HUB_DISABLE_XET (sitecustomize)."
+        else
+          check_fail "Image does NOT have Xet active under the operator-injected HF_HUB_DISABLE_XET=1." \
+            "Large shards fail with 'file too large ... use hf_xet'; hf_xet installed in wrong env or sitecustomize missing." \
+            "Ensure requirements-downloader.txt installs into /prod_venv and scripts/sitecustomize.py is COPY'd in; rebuild."
+        fi
+      else
+        dim "  (skipping deep image Xet probe — image not in local docker)"
+      fi
+
+      # (e) Xet engaged at runtime (chunk cache materialized on the volume)
+      PROBE_POD="${RUNNING_POD}"
+      [[ -z "$PROBE_POD" ]] && PROBE_POD=$(echo "$DL_PODS" | tail -1)
+      if [[ -n "$PROBE_POD" ]]; then
+        XET_DIR=$(kubectl exec "$PROBE_POD" -n "$CACHE_NS" 2>/dev/null -- sh -c 'ls -d /cache/.hf/xet 2>/dev/null' || true)
+        if [[ -n "$XET_DIR" ]]; then
+          check_pass "Xet chunk cache present on the volume (/cache/.hf/xet) — Xet was used."
+        elif [[ "$CACHE_STATUS" == "Available" ]]; then
+          check_pass "Xet chunk cache already cleaned up post-completion (expected for Available cache)."
+        else
+          check_warn "No /cache/.hf/xet directory observed while still downloading." \
+            "Download may be running over plain HTTP (slow) instead of Xet." \
+            "Confirm Xet via the deep image probe above; rebuild the image if it reports XET_OFF."
+        fi
+      fi
+    fi
+
+    # (f) HF token injection
+    if [[ "${HF_ENV:-0}" -gt 0 ]]; then
+      check_pass "HF_TOKEN injected into the download pod."
+    else
+      check_warn "HF_TOKEN not injected." \
+        "Unauthenticated downloads are throttled (~1-2 MB/s) and gated repos return 401/403." \
+        "Create the 'hf-token' secret (start.sh does this from .env) so caches inject it via spec.env."
+    fi
+  done
+
+  echo ""
+  info "Recreate a failed cache after fixing the root cause:"
+  echo "    kubectl delete aimmodelcache ${CACHE_NAME:-<name>} -n ${CACHE_NS}"
+  echo "    kubectl apply -f scripts/poc-caches.yaml   # or a single-resource manifest"
+  info "Docs: https://enterprise-ai.docs.amd.com/en/latest/aim-engine/admin/troubleshooting.html"
   echo ""
   exit 0
 fi
@@ -1274,6 +1702,7 @@ esac
 echo ""
 info "Full service probe:    $0 --endpoint"
 info "Cluster status:        $0 --cluster"
+info "Model cache download:  $0 --cache ${SERVICE_NAME}"
 info "GPU allocation:        $0 --gpu"
 info "All services:          $0 --list"
 info "Official docs:         https://enterprise-ai.docs.amd.com/en/latest/aim-engine/admin/troubleshooting.html"

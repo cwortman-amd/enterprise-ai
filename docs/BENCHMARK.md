@@ -16,6 +16,39 @@ For normal POC runs, prefer the checked-in automation:
 
 The manual examples below are useful when you need to customize the benchmark runner or run outside the repository script.
 
+### Targeting an endpoint
+
+`benchmark.sh` picks the endpoint in this order:
+
+1. `--target-url URL` — use an explicit endpoint (skips auto-detect).
+2. `--port-forward SVC` — for the **raw `deploy.sh` track**, automatically
+   `kubectl port-forward`s the Service, waits until `/v1/models` is ready, runs
+   the benchmark against `localhost`, and tears the forward down on exit:
+
+   ```bash
+   ./scripts/benchmark.sh --mode all --port-forward gpt-oss-120b-aim
+   # override defaults if needed:
+   ./scripts/benchmark.sh --mode perf --port-forward gpt-oss-120b-aim \
+     --namespace default --local-port 8000
+   ```
+
+   `--port-forward` and `--target-url` are mutually exclusive.
+3. **Auto-detect (default).** With no endpoint flags, it discovers the deployed
+   model, preferring the **`deploy.sh` raw track**:
+   1. an available `<model>-aim` Deployment (from `deploy.sh`) — targeted via its
+      Service **ClusterIP** directly, so a bare `benchmark.sh` hits whatever
+      `deploy.sh` last brought up;
+   2. otherwise a Ready operator-track (`start.sh`) `InferenceService` predictor
+      (via its ClusterIP);
+   3. otherwise `http://localhost:8000` (local Docker endpoint).
+
+   Namespace defaults to `default`; override with `--namespace`.
+
+   > Auto-detect uses the ClusterIP rather than `kubectl port-forward` because a
+   > port-forward tunnel drops connections under the long, high-concurrency
+   > accuracy eval (`ServerDisconnectedError`). If this host cannot route to
+   > cluster IPs (e.g. a remote kubeconfig), use `--port-forward <svc>` instead.
+
 ---
 
 ## Overview and Architecture
@@ -617,14 +650,52 @@ print(f"GSM8K strict-match:       {gsm.get('exact_match,strict-match', 'N/A'):.4
 print(f"GSM8K flexible-extract:   {gsm.get('exact_match,flexible-extract', 'N/A'):.4f}")
 ```
 
+### Capturing Server-Side Errors (HTTP 500)
+
+`lm_eval` only sees an opaque `500 Internal Server Error` when a request fails, and the
+real traceback rotates out of the pod log quickly under the high request volume of an
+accuracy run. To preserve it, `scripts/benchmark.sh` **streams the serving pod's own logs to
+a file for the duration of the accuracy phase** and, if `lm_eval` exits non-zero, scans the
+capture for the fatal signature and prints a focused excerpt.
+
+This needs no extra flags — the pod is identified from the same auto-detection used for the
+endpoint (raw `deploy.sh` `app=<model>-aim`, or the operator `serving.kserve.io/inferenceservice=<name>`).
+When you override the endpoint with `--target-url` (so the pod is unknown), pass
+`--port-forward <svc>` instead to keep log capture working.
+
+Artifacts written under `results/accuracy/`:
+
+| File | Contents |
+| :--- | :--- |
+| `server.pod.log` | Full server-side log streamed during the eval (always written) |
+| `server_error.signature.log` | Matched error lines (NaN/Inf, `not JSON compliant`, tracebacks, 500s) — only on failure |
+
+When the capture matches `Out of range float values are not JSON compliant` / NaN logprobs,
+the script prints a **ROOT CAUSE CONFIRMED** banner. The run then exits with code **4** so
+automation notices the accuracy failure (perf-only "no data" failures still exit **3**).
+
 ---
 
-## Reference Links
+## Next Steps
+
+After a benchmark run:
+
+1. **Archive the results** — keep the sweep JSON/CSV and `accuracy_summary.json` together with the environment details (model, image tags, ROCm version, GPU count) so runs are comparable later.
+2. **Investigate anomalies** — if throughput, latency, or accuracy look off, confirm the endpoint is healthy with `scripts/check.sh` (**[CHECK.md](CHECK.md)**), then diagnose with `scripts/debug.sh` and the state-driven flow in **[DEBUG.md](DEBUG.md)**.
+3. **Compare configurations** — switch models or GPU/TP configs with `scripts/start.sh --model <name>` and re-run the sweep.
+
+> [!NOTE]
+> A slow first request is expected (one-time `aiter` JIT compilation). The benchmark warmup pass absorbs this — see **[DEBUG.md](DEBUG.md)** Section 3.
+
+---
+
+## Further Reading
 
 | Resource | Link |
 | :--- | :--- |
 | EAI Install Guide | [INSTALL.md](INSTALL.md) |
 | Quickstart & Model Manifests | [QUICKSTART.md](QUICKSTART.md) |
+| Sanity-Checking Serving | [CHECK.md](CHECK.md) |
 | Debugging AIMService | [DEBUG.md](DEBUG.md) |
 | Official EAI Docs | [enterprise-ai.docs.amd.com](https://enterprise-ai.docs.amd.com/en/latest/) |
 | lm-evaluation-harness | [github.com/EleutherAI/lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) |

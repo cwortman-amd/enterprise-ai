@@ -1,0 +1,19 @@
+# ClusterIP service fronting the Mixtral-8x22B AIM deployment.
+# Reach it locally with:
+#   kubectl port-forward service/mixtral-8x22b-aim 8000:80 -n default
+# then curl http://localhost:8000/v1/completions
+apiVersion: v1
+kind: Service
+metadata:
+  name: mixtral-8x22b-aim
+  namespace: default
+  labels:
+    app: mixtral-8x22b-aim
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+  selector:
+    app: mixtral-8x22b-aim

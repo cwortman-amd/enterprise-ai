@@ -6,7 +6,7 @@ metadata:
   name: llama-3-3-70b
   namespace: default
   labels:
-    poc.bny.com/workload: memory-benchmark
+    poc.amd.com/workload: memory-benchmark
 spec:
   cacheModel: true
   model:
@@ -24,7 +24,7 @@ metadata:
   name: mixtral-8x22b
   namespace: default
   labels:
-    poc.bny.com/workload: memory-benchmark
+    poc.amd.com/workload: memory-benchmark
 spec:
   cacheModel: true
   model:
@@ -42,7 +42,7 @@ metadata:
   name: gpt-oss-120b
   namespace: default
   labels:
-    poc.bny.com/workload: memory-benchmark
+    poc.amd.com/workload: memory-benchmark
 spec:
   cacheModel: true
   model:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # install.sh — AMD Enterprise AI Reference Stack Installer
-# BNY MI355X POC | Idempotent Installation Script
+# MI355X POC | Idempotent Installation Script
 #
 # Usage:
 #   ./scripts/install.sh              Normal install (skips completed phases)
@@ -425,9 +425,9 @@ print_summary() {
   echo -e "  Username: ${CYAN}devuser@${domain}${RESET}"
   echo -e "  Password: ${CYAN}password${RESET}  (forced change on first login)"
   echo ""
-  echo -e "  ${BOLD}Next Steps (BNY POC):${RESET}"
+  echo -e "  ${BOLD}Next Steps (POC):${RESET}"
   echo -e "  1. Add Hugging Face token in AI Workbench → Secrets"
-  echo -e "  2. Deploy benchmark models: ${CYAN}kubectl apply -f scripts/bny-poc-models.yaml${RESET}"
+  echo -e "  2. Deploy benchmark models: ${CYAN}kubectl apply -f scripts/poc-models.yaml${RESET}"
   echo -e "  3. Monitor deployment: ${CYAN}./scripts/debug.sh --list${RESET}"
   echo -e "  4. See docs/QUICKSTART.md for full benchmark procedures"
   echo ""
@@ -442,7 +442,7 @@ print_summary() {
 # Main
 # =============================================================================
 main() {
-  header "AMD Enterprise AI Installer | BNY MI355X POC"
+  header "AMD Enterprise AI Installer | MI355X POC"
   log "WORKDIR: $WORKDIR"
   log "FORGE_VERSION: $FORGE_VERSION | BLOOM_VERSION: $BLOOM_VERSION"
   log "FORCE_REDEPLOY: $FORCE_REDEPLOY"

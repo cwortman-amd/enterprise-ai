@@ -59,6 +59,7 @@ SKIP_SMOKE_TEST="${SKIP_SMOKE_TEST:-false}"
 FORCE_CACHE_REFRESH="${FORCE_CACHE_REFRESH:-false}"
 STOP_PREVIOUS_MODELS="${STOP_PREVIOUS_MODELS:-true}"
 CLEANUP_STALLED_CACHE_POD="${CLEANUP_STALLED_CACHE_POD:-true}"
+HF_TOKEN_SECRET="${HF_TOKEN_SECRET:-hf-token}"
 
 usage() {
   sed -n '2,25p' "$0" | sed 's/^# \?//'
@@ -150,12 +151,12 @@ case "$MODEL" in
     CLUSTER_MODEL="gpt-oss-120b-model"
     TEMPLATE_CACHE_NAME="gpt-oss-120b-mi355x-lat"
     CACHE_NAME="openai-gpt-oss-120b"
-    CACHE_SIZE="240Gi"
+    CACHE_SIZE="500Gi"
     SOURCE_URI="hf://openai/gpt-oss-120b"
     SOURCE_NAME="openai/gpt-oss-120b"
     GPU_COUNT="1"
-    [[ "$CACHE_WAIT_TIMEOUT_USER_SET" == "true" ]] || CACHE_WAIT_TIMEOUT="14400"
-    [[ "$CACHE_STALL_TIMEOUT_USER_SET" == "true" ]] || CACHE_STALL_TIMEOUT="1800"
+    [[ "$CACHE_WAIT_TIMEOUT_USER_SET" == "true" ]] || CACHE_WAIT_TIMEOUT="43200"
+    [[ "$CACHE_STALL_TIMEOUT_USER_SET" == "true" ]] || CACHE_STALL_TIMEOUT="3600"
     MODEL_DOWNLOAD_IMAGE="${GPT_OSS_MODEL_DOWNLOAD_IMAGE:-gpt-oss-downloader:hf-transfer}"
     ;;
   *)
@@ -165,7 +166,7 @@ esac
 
 apply_supporting_resources() {
   header "Applying AIM model/template resources"
-  kubectl apply -f "${SCRIPT_DIR}/bny-custom-templates.yaml"
+  kubectl apply -f "${SCRIPT_DIR}/custom-templates.yaml"
   kubectl apply -f "${SCRIPT_DIR}/gpt-oss-model.yaml"
   ok "AIMClusterModels and AIMClusterServiceTemplates are applied."
 }
@@ -469,6 +470,45 @@ validate_hf_token_for_download() {
   esac
 }
 
+# Create/refresh the Kubernetes secret that holds the Hugging Face token so the
+# AIM download job can authenticate (higher rate limits + gated/private repos).
+# The token is injected into the AIMModelCache via spec.env -> secretKeyRef.
+ensure_hf_token_secret() {
+  [[ "$SOURCE_URI" == hf://* ]] || return 0
+  local token="${HF_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}"
+  if [[ -z "$token" ]]; then
+    warn "No HF_TOKEN/HUGGING_FACE_HUB_TOKEN set; download will be unauthenticated and rate-limited."
+    return 0
+  fi
+  info "Ensuring Hugging Face token secret '${HF_TOKEN_SECRET}' in namespace '${NAMESPACE}'."
+  kubectl create secret generic "$HF_TOKEN_SECRET" -n "$NAMESPACE" \
+    --from-literal=token="$token" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  ok "Hugging Face token secret '${HF_TOKEN_SECRET}' is in place."
+}
+
+# Emit the AIMModelCache spec.env block that injects the HF token from the
+# secret, but only when the secret exists (so unauthenticated runs still work).
+hf_token_env_block() {
+  [[ "$SOURCE_URI" == hf://* ]] || return 0
+  kubectl get secret "$HF_TOKEN_SECRET" -n "$NAMESPACE" >/dev/null 2>&1 || return 0
+  cat <<EOF
+  env:
+    - name: HF_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: ${HF_TOKEN_SECRET}
+          key: token
+          optional: true
+    - name: HUGGING_FACE_HUB_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: ${HF_TOKEN_SECRET}
+          key: token
+          optional: true
+EOF
+}
+
 apply_explicit_model_cache() {
   [[ -n "$MODEL_DOWNLOAD_IMAGE" ]] || return 1
 
@@ -514,6 +554,8 @@ apply_explicit_model_cache() {
     done
   fi
 
+  ensure_hf_token_secret
+
   cache_manifest="$(mktemp)"
   cat >"$cache_manifest" <<EOF
 apiVersion: aim.silogen.ai/v1alpha1
@@ -526,6 +568,7 @@ spec:
   size: ${CACHE_SIZE}
   sourceUri: ${SOURCE_URI}
   modelDownloadImage: ${MODEL_DOWNLOAD_IMAGE}
+$(hf_token_env_block)
 EOF
 
   kubectl apply -f "$cache_manifest"
@@ -634,7 +677,7 @@ metadata:
   name: ${SERVICE_NAME}
   namespace: ${NAMESPACE}
   labels:
-    poc.bny.com/workload: memory-benchmark
+    poc.amd.com/workload: memory-benchmark
 spec:
   cacheModel: true
   model:

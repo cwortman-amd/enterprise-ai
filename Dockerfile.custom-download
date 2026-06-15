@@ -1,0 +1,33 @@
+# Custom KServe storage initializer for GPT-OSS (Hugging Face Xet-backed weights).
+#
+# The AIM controller injects HF_HUB_DISABLE_XET=1 into cache download jobs, which
+# breaks downloads of Xet-backed repositories like openai/gpt-oss-120b. This image
+# extends the default KServe storage initializer with hf_xet / hf_transfer and a
+# custom entrypoint (scripts/custom-initializer-entrypoint.py) that re-enables Xet
+# and keeps the Xet chunk cache on the model cache volume.
+#
+# Build + import into the cluster runtime with: scripts/build-gpt-oss-downloader.sh
+# Base image matches the cluster's default storage initializer.
+FROM kserve/storage-initializer:v0.16.0-rc0
+
+USER root
+
+# Install into the storage initializer's runtime venv (/prod_venv), NOT the
+# system python. The operator overrides the container entrypoint to run
+# `/prod_venv/bin/python /storage-initializer/scripts/initializer-entrypoint`,
+# so dependencies must live in /prod_venv to take effect (the venv is built
+# with include-system-site-packages=false).
+# The venv is built by uv and ships without pip, so bootstrap it via ensurepip.
+COPY requirements-downloader.txt /tmp/requirements-downloader.txt
+RUN /prod_venv/bin/python -m ensurepip --upgrade && \
+    /prod_venv/bin/python -m pip install --no-cache-dir --upgrade -r /tmp/requirements-downloader.txt
+
+COPY scripts/custom-initializer-entrypoint.py /opt/custom-initializer-entrypoint.py
+
+# The AIM controller hard-injects HF_HUB_DISABLE_XET=1 into the cache download
+# job and overrides the container entrypoint, so neither AIMModelCache spec.env
+# nor our ENTRYPOINT can re-enable Xet. Python auto-imports sitecustomize at
+# interpreter startup, so this clears the flag before huggingface_hub loads.
+COPY scripts/sitecustomize.py /prod_venv/lib/python3.11/site-packages/sitecustomize.py
+
+ENTRYPOINT ["python", "/opt/custom-initializer-entrypoint.py"]

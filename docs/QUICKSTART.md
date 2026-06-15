@@ -1,8 +1,8 @@
-# BNY–AMD MI355X POC Quickstart Guide
+# AMD Enterprise AI MI355X POC Quickstart Guide
 
 AMD Enterprise AI Reference Stack | June 2026
 
-This guide provides step-by-step instructions for executing the BNY POC Test Plan using the AMD Enterprise AI stack. Each section maps directly to the POC workload categories.
+This guide provides step-by-step instructions for executing the POC test plan using the AMD Enterprise AI stack. Each section maps directly to the POC workload categories. Customer- or site-specific values (domain, credentials, tokens) belong in `scripts/.env`.
 
 > [!IMPORTANT]
 > **MI355X Note:** Normal POC runs should use `scripts/start.sh`. It applies this repository's custom MI355X `AIMClusterServiceTemplate` resources before creating `AIMService` objects. If you write manual AIMService manifests without those custom templates, include `allowUnoptimized: true` or the service can remain stuck in **Pending** indefinitely (`GPU not in cluster` condition).
@@ -13,12 +13,15 @@ This guide provides step-by-step instructions for executing the BNY POC Test Pla
 
 | Item | Value |
 | :--- | :--- |
-| AMD Resource Manager | `https://airmui.<ip>.nip.io` |
-| AMD AI Workbench | `https://aiwbui.<ip>.nip.io` |
-| Default Login | `devuser@<ip>.nip.io` / `password` |
+| AMD Resource Manager | `https://airmui.<domain>` |
+| AMD AI Workbench | `https://aiwbui.<domain>` |
+| Default Login | `devuser@<domain>` / `password` |
 | ROCm Version | 7.0.2 (required) |
 | AIM Catalog Version | 0.11.0 |
 | Model launcher | `scripts/start.sh` |
+
+> [!NOTE]
+> `<domain>` is your cluster domain. It defaults to `<ip>.nip.io` (the node IP resolved through nip.io) unless you set a custom `DOMAIN_OVERRIDE` during install, in which case substitute your own domain.
 
 ### Expected Durations
 
@@ -93,7 +96,7 @@ metadata:
   name: llama-3-3-70b
   namespace: default
   labels:
-    poc.bny.com/workload: memory-benchmark
+    poc.amd.com/workload: memory-benchmark
 spec:
   cacheModel: true
   model:
@@ -111,7 +114,7 @@ metadata:
   name: mixtral-8x22b
   namespace: default
   labels:
-    poc.bny.com/workload: memory-benchmark
+    poc.amd.com/workload: memory-benchmark
 spec:
   cacheModel: true
   model:
@@ -129,7 +132,7 @@ metadata:
   name: gpt-oss-120b
   namespace: default
   labels:
-    poc.bny.com/workload: memory-benchmark
+    poc.amd.com/workload: memory-benchmark
 spec:
   cacheModel: true
   model:
@@ -142,16 +145,16 @@ spec:
 ```
 
 ```bash
-kubectl apply -f scripts/bny-custom-templates.yaml
+kubectl apply -f scripts/custom-templates.yaml
 kubectl apply -f scripts/gpt-oss-model.yaml
-kubectl apply -f scripts/bny-poc-models.yaml
+kubectl apply -f scripts/poc-models.yaml
 ```
 
 > [!NOTE]
 > Applying all model manifests directly can request more GPUs than the node has available. Prefer `start.sh` when benchmarking one model at a time.
 
 > [!NOTE]
-> The `AIMService` examples above rely on the model and template resources in `scripts/bny-custom-templates.yaml` and `scripts/gpt-oss-model.yaml`. If you instead create image-based AIMService manifests manually, add `allowUnoptimized: true` on MI355X unless you provide an equivalent MI355X template.
+> The `AIMService` examples above rely on the model and template resources in `scripts/custom-templates.yaml` and `scripts/gpt-oss-model.yaml`. If you instead create image-based AIMService manifests manually, add `allowUnoptimized: true` on MI355X unless you provide an equivalent MI355X template.
 
 ### B. Monitor Deployment Progress
 
@@ -279,7 +282,7 @@ kubectl patch inferenceservice "$ISVC" -n default \
   --type=merge -p '{"spec":{"predictor":{"minReplicas":1,"maxReplicas":2}}}'
 
 # 5. View resource consumption in AMD Resource Manager UI
-# Navigate to: https://airmui.<ip>.nip.io → Clusters → Node GPU Metrics
+# Navigate to: https://airmui.<domain> → Clusters → Node GPU Metrics
 ```
 
 ### Key Metrics to Record
@@ -296,7 +299,7 @@ AMD Enterprise AI supports agentic workflows through **Solution Blueprints** in 
 
 ### A. Deploy an Agentic Blueprint (UI)
 
-1. Log into **AMD AI Workbench** (`https://aiwbui.<ip>.nip.io`)
+1. Log into **AMD AI Workbench** (`https://aiwbui.<domain>`)
 2. Navigate to **Solution Blueprints**
 3. Select an agentic or RAG blueprint (e.g., OpenWebUI + LangChain)
 4. Configure the backend API to point to your running inference service
@@ -363,18 +366,7 @@ curl -s "${SERVICE_URL}/v1/chat/completions" \
 
 ---
 
-## 7. POC Timeline
-
-| Week | Focus | Key Tasks |
-| :--- | :--- | :--- |
-| **Week 1** | Environment setup & validation | Install, GPU check, cluster health |
-| **Week 2** | Memory-intensive benchmarking | Deploy 3 models, run throughput/latency benchmarks |
-| **Week 3** | Distributed + K8s + Agentic | Multi-GPU tests, autoscaling, Blueprint deployment |
-| **Week 4** | Optimization + reporting | Tune, compare vs. B200 baseline, final report |
-
----
-
-## 8. Troubleshooting Quick Reference
+## 7. Troubleshooting Quick Reference
 
 ```bash
 # A service is stuck in Pending (replace mixtral-8x22b and default with your service name and namespace)
@@ -391,7 +383,31 @@ kubectl logs -n aim-engine -l app.kubernetes.io/component=controller --tail=50
 
 # Force-delete a failed service and redeploy (replace mixtral-8x22b and default with your service details)
 kubectl delete aimservice mixtral-8x22b -n default
-kubectl apply -f scripts/bny-poc-models.yaml
+kubectl apply -f scripts/poc-models.yaml
 ```
 
 See [INSTALL.md](INSTALL.md) for the full troubleshooting table.
+
+---
+
+## 8. Next Steps
+
+After a model is serving:
+
+1. **Verify it end to end** — run the automated sanity check (resolves the endpoint, calls `/v1/models`, and sends a chat completion) with `scripts/check.sh`. See **[CHECK.md](CHECK.md)**.
+2. **Benchmark it** — run the performance sweep and accuracy evaluation with `scripts/benchmark.sh`. See **[BENCHMARK.md](BENCHMARK.md)**.
+3. **Troubleshoot** — if a service is stuck or the endpoint misbehaves, use `scripts/debug.sh` and the state-driven flow in **[DEBUG.md](DEBUG.md)**.
+
+To switch models, re-run `scripts/start.sh --model <name>`; it stops the previous model and frees GPUs before starting the next.
+
+---
+
+## 9. Further Reading
+
+| Document | Purpose |
+| :--- | :--- |
+| [INSTALL.md](INSTALL.md) | Install and verify the platform |
+| [CHECK.md](CHECK.md) | Sanity-check model serving end to end |
+| [BENCHMARK.md](BENCHMARK.md) | Performance sweep and accuracy evaluation |
+| [DEBUG.md](DEBUG.md) | Detailed troubleshooting and diagnostics |
+| Official EAI Docs | [enterprise-ai.docs.amd.com](https://enterprise-ai.docs.amd.com/en/latest/) |

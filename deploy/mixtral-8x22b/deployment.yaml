@@ -1,0 +1,105 @@
+# Standalone AIM deployment for mistralai/Mixtral-8x22B-Instruct-v0.1.
+# Based on the AIM deployment guide's Kubernetes manifest, adapted to:
+#   - target our MI355x hardware (AIM_GPU_MODEL=MI355X)
+#   - 8 GPUs (TP8), matching our operator template (the guide's example uses 4)
+#   - persist the model cache across restarts
+#
+# Mixtral-8x22B is ungated, so no HF token is required.
+# Apply with: kubectl apply -f deploy/mixtral-8x22b/ -n default
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mixtral-8x22b-aim
+  namespace: default
+  labels:
+    app: mixtral-8x22b-aim
+spec:
+  progressDeadlineSeconds: 3600
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mixtral-8x22b-aim
+  template:
+    metadata:
+      labels:
+        app: mixtral-8x22b-aim
+    spec:
+      containers:
+        - name: mixtral-8x22b-aim
+          image: amdenterpriseai/aim-mistralai-mixtral-8x22b-instruct-v0-1:0.11.1
+          imagePullPolicy: Always
+          env:
+            - name: AIM_ENGINE
+              value: "vllm"
+            - name: AIM_GPU_MODEL
+              value: "MI355X"
+            - name: AIM_GPU_COUNT
+              value: "8"
+            - name: AIM_PRECISION
+              value: "auto"
+            - name: AIM_METRIC
+              value: "latency"
+            - name: AIM_LOG_LEVEL_ROOT
+              value: "INFO"
+            - name: AIM_LOG_LEVEL
+              value: "INFO"
+            - name: AIM_PORT
+              value: "8000"
+          ports:
+            - name: http
+              containerPort: 8000
+          resources:
+            requests:
+              memory: "64Gi"
+              cpu: "16"
+              amd.com/gpu: "8"
+            limits:
+              memory: "64Gi"
+              cpu: "16"
+              amd.com/gpu: "8"
+          startupProbe:
+            httpGet:
+              path: /v1/models
+              port: http
+            periodSeconds: 10
+            failureThreshold: 360
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: http
+          volumeMounts:
+            - name: model-cache
+              mountPath: /workspace/model-cache
+            - name: ephemeral-storage
+              mountPath: /tmp
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: mixtral-8x22b-model-cache
+        - name: ephemeral-storage
+          emptyDir:
+            sizeLimit: 256Gi
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mixtral-8x22b-model-cache
+  namespace: default
+  labels:
+    app: mixtral-8x22b-aim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 320Gi

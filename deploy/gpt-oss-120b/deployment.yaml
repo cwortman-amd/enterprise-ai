@@ -1,0 +1,137 @@
+# Standalone AIM deployment for openai/gpt-oss-120b on 8x MI355X (TP8).
+#
+# Based on the AIM deployment guide's Kubernetes manifest, adapted to:
+#   - pin image 0.11.1
+#   - request 8 MI355X GPUs (TP8)
+#   - select AMD's built-in, version-matched MI355X profile
+#     (vllm-mi355x-mxfp4-tp8-latency) via AIM_PROFILE_ID — it already encodes
+#     AMD's MI355X tuning (AITER unified attention, QuickReduce INT4,
+#     FULL_AND_PIECEWISE cudagraphs) and is validated for accuracy
+#   - inject HF_TOKEN for the gated openai/gpt-oss-120b repo
+#
+# Apply with: kubectl apply -f deploy/gpt-oss-120b/ -n default
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpt-oss-120b-aim
+  namespace: default
+  labels:
+    app: gpt-oss-120b-aim
+spec:
+  progressDeadlineSeconds: 3600
+  replicas: 1
+  # The pod consumes every GPU on the node, so a rolling update can never place
+  # a surge pod alongside the old one. Recreate tears the old pod down first.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gpt-oss-120b-aim
+  template:
+    metadata:
+      labels:
+        app: gpt-oss-120b-aim
+    spec:
+      containers:
+        - name: gpt-oss-120b-aim
+          image: amdenterpriseai/aim-openai-gpt-oss-120b:0.11.1
+          imagePullPolicy: Always
+          env:
+            - name: AIM_ENGINE
+              value: "vllm"
+            - name: AIM_GPU_MODEL
+              value: "MI355X"
+            - name: AIM_GPU_COUNT
+              value: "8"
+            - name: AIM_PRECISION
+              value: "auto"
+            - name: AIM_METRIC
+              value: "latency"
+            # Use AMD's built-in MI355X TP8 profile (ships in the image,
+            # version-matched, validated for accuracy). It already encodes AMD's
+            # MI355X tuning: TP8, AITER unified attention, QuickReduce INT4,
+            # FULL_AND_PIECEWISE cudagraphs. A custom profile with
+            # use_inductor_graph_partition + block-size 64 produced NaN logprobs
+            # (HTTP 500 on /v1/completions during accuracy eval), so we rely on
+            # the built-in instead. Built-in profile IDs are the bare filename.
+            - name: AIM_PROFILE_ID
+              value: "vllm-mi355x-mxfp4-tp8-latency"
+            - name: AIM_LOG_LEVEL_ROOT
+              value: "INFO"
+            - name: AIM_LOG_LEVEL
+              value: "INFO"
+            - name: AIM_PORT
+              value: "8000"
+            # HF token for the gated openai/gpt-oss-120b repo. Optional so the
+            # pod still starts if the secret is absent (e.g. pre-cached model).
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true
+          ports:
+            - name: http
+              containerPort: 8000
+          resources:
+            requests:
+              memory: "64Gi"
+              cpu: "16"
+              amd.com/gpu: "8"
+            limits:
+              memory: "64Gi"
+              cpu: "16"
+              amd.com/gpu: "8"
+          startupProbe:
+            httpGet:
+              path: /v1/models
+              port: http
+            periodSeconds: 10
+            failureThreshold: 360
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: http
+          volumeMounts:
+            - name: model-cache
+              mountPath: /workspace/model-cache
+            - name: ephemeral-storage
+              mountPath: /tmp
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        # Persisted model cache avoids re-downloading ~120B weights on restart.
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: gpt-oss-120b-model-cache
+        - name: ephemeral-storage
+          emptyDir:
+            sizeLimit: 256Gi
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gpt-oss-120b-model-cache
+  namespace: default
+  labels:
+    app: gpt-oss-120b-aim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Gi

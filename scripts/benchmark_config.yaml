@@ -2,18 +2,35 @@ server:
   type: "vllm"
   base_url: "http://10.243.110.119"
   model_name: "mistralai/Mixtral-8x22B-Instruct-v0.1"
+  ignore_eos: true          # produce the full requested output length
 
+api:
+  type: "completion"
+  streaming: true            # required to capture TTFT / inter-token latency
+
+# Use the SERVED model's tokenizer so prompt token counts are accurate. A
+# generic tokenizer like "gpt2" caps at model_max_length=1024 and silently
+# breaks long-context runs (e.g. ISL=8192).
 tokenizer:
-  pretrained_model_name_or_path: "gpt2"
+  pretrained_model_name_or_path: "mistralai/Mixtral-8x22B-Instruct-v0.1"
 
+# "random" builds prompts from random token IDs, reliably hitting high token
+# targets (ISL=8192) that the "synthetic" text converger cannot. total_count
+# must be >= the largest stage's num_requests.
 data:
-  type: "synthetic"
+  type: "random"
   input_distribution:
-    type: "fixed"
-    mean: 200
+    min: 180
+    max: 200
+    mean: 190
+    std_dev: 5
+    total_count: 20
   output_distribution:
-    type: "fixed"
+    min: 32
+    max: 32
     mean: 32
+    std_dev: 0
+    total_count: 20
 
 load:
   type: "concurrent"
