@@ -25,7 +25,7 @@ diagnostics with Bash scripts and Kubernetes manifests.
 | `scripts/install.sh` | Installs the platform with Bloom and deploys Cluster Forge. |
 | `scripts/start.sh` | Starts one model via the AIM operator track (managed cache/routing) and prints endpoint details. |
 | `scripts/deploy.sh` | Starts one model via the raw AIM track (plain Deployment + Service), auto-discovered from `deploy/`. Blocks until the endpoint serves a chat response. |
-| `scripts/check.sh` | Validates the currently-served model (`/v1/models` + chat); with `--model` it ensures the model is up first. Writes a TSV summary. |
+| `scripts/check.sh` | Sanity-checks the currently-served model with two curl calls (`/v1/models` + chat completion). Auto-detects the endpoint (or pass `--url`); never deploys. |
 | `scripts/debug.sh` | Collects cluster, AIM, GPU, routing, portal, and endpoint diagnostics. |
 | `scripts/benchmark.sh` | Runs inference-perf sweeps and lm-evaluation-harness accuracy checks. |
 | `scripts/build-gpt-oss-downloader.sh` | Builds the optional GPT-OSS Hugging Face downloader image. |

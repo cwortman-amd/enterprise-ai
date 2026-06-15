@@ -158,10 +158,10 @@ Improvements from review feedback are folded in and marked _(refinement)_.
 
 ### Block 4 — Check AIM Health  *(shared cluster)*
 - **Objective:** compose a **repeatable health checklist**.
-- **Wraps:** `check.sh --model llama-3-3-70b`.
+- **Wraps:** `start.sh --model llama-3-3-70b` (bring the model up), then `check.sh` (auto-detects the served endpoint).
 - **Checklist:** resource → pod → logs → endpoint → smoke test → metrics.
 - **Verify:** `/v1/models` returns an id; smoke chat/completion returns text. _(refinement)_ guard: **don't append `/v1` twice**.
-- **Artifact:** `check.latest.summary.tsv` + the filled `health-checklist.md`.
+- **Artifact:** `check.sh` console output + the filled `health-checklist.md`.
 - **Instructor notes:** this is the model for the `grade.sh` rubric (Objective 4).
 
 ### Block 5 — Use & Benchmark  *(shared cluster)*

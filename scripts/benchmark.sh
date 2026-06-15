@@ -541,7 +541,12 @@ run_accuracy_eval() {
     pip install --quiet "lm_eval[vllm,api]"
   fi
 
-  log "Running lm_eval — tasks: gsm8k, mmlu — fewshot: 5"
+  # MMLU uses the GENERATIVE flan variant (generate_until + answer extraction)
+  # rather than the default loglikelihood scoring. The loglikelihood path returns
+  # token logprobs, and gpt-oss-120b (mxfp4) occasionally emits a NaN logprob that
+  # vLLM's /v1/completions cannot JSON-serialize → HTTP 500. Generation-only tasks
+  # never request logprobs, so they sidestep that failure entirely.
+  log "Running lm_eval — tasks: gsm8k, mmlu_flan_n_shot_generative — fewshot: 5"
   log "Model     : ${MODEL_ID}"
   log "TP size   : ${TENSOR_PARALLEL}"
   log "Max len   : ${MAX_MODEL_LEN}"
@@ -556,7 +561,7 @@ run_accuracy_eval() {
   python3 -m lm_eval \
     --model local-completions \
     --model_args "model=${MODEL_ID},base_url=${TARGET_URL}/v1/completions,num_concurrent=16,tokenized_requests=False,tokenizer=${MODEL_ID}" \
-    --tasks gsm8k,mmlu \
+    --tasks gsm8k,mmlu_flan_n_shot_generative \
     --num_fewshot 5 \
     --batch_size 1 \
     --gen_kwargs max_gen_toks=2048 \
@@ -594,11 +599,31 @@ with open(result_files[-1]) as f:
 
 results = data.get("results", {})
 
-mmlu_scores = [v["acc,none"] for k, v in results.items() if k.startswith("mmlu_")]
-if mmlu_scores:
-    mmlu_avg = sum(mmlu_scores) / len(mmlu_scores)
-else:
-    mmlu_avg = results.get("mmlu", {}).get("acc,none")
+# Pick the best available score from a result entry, tolerating both the
+# generative MMLU metric (exact_match with strict/flexible filters) and the
+# older loglikelihood metric (acc).
+def pick_score(entry):
+    for m in ("exact_match,strict-match", "exact_match,flexible-extract",
+              "acc,none", "exact_match,none"):
+        if entry.get(m) is not None:
+            return entry[m]
+    return None
+
+# Prefer the generative MMLU group aggregate; fall back to averaging subjects.
+mmlu_avg = pick_score(results.get("mmlu_flan_n_shot_generative", {}))
+if mmlu_avg is None:
+    subj = [pick_score(v) for k, v in results.items()
+            if k.startswith("mmlu_flan_n_shot_generative_")]
+    subj = [s for s in subj if s is not None]
+    mmlu_avg = sum(subj) / len(subj) if subj else None
+# Last-resort fallback for older loglikelihood-style result files.
+if mmlu_avg is None:
+    legacy = [v["acc,none"] for k, v in results.items()
+              if k.startswith("mmlu_") and "acc,none" in v]
+    if legacy:
+        mmlu_avg = sum(legacy) / len(legacy)
+    else:
+        mmlu_avg = results.get("mmlu", {}).get("acc,none")
 
 gsm = results.get("gsm8k", {})
 strict  = gsm.get("exact_match,strict-match")
@@ -608,7 +633,7 @@ print("\n" + "="*50)
 print("  Accuracy Summary")
 print("="*50)
 if mmlu_avg is not None:
-    print(f"  MMLU 5-shot accuracy     : {mmlu_avg:.4f}")
+    print(f"  MMLU 5-shot (generative) : {mmlu_avg:.4f}")
 if strict is not None:
     print(f"  GSM8K strict-match       : {strict:.4f}")
 if flexible is not None:

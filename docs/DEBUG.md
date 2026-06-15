@@ -222,14 +222,21 @@ The default storage initializer cannot fetch large Xet-backed shards over plain 
 
 #### Debugging Flow for GPU Resources
 
-1. Inspect the GPU requests of all active services:
-   - Llama 3.3: Requires 1 GPU (TP=1)
-   - GPT-OSS: Requires 1 GPU (TP=1)
-   - Mixtral-8x22B: Requires 8 GPUs (TP=8)
+1. Inspect the GPU requests of all active services. Requests depend on the track and
+   manifest, e.g. the raw `deploy.sh` manifests under `deploy/<model>/`:
+   - `gpt-oss-120b` (raw track): **8 GPUs** (TP=8, whole node)
+   - `mixtral-8x22b`: **8 GPUs** (TP=8)
+   - `llama-3-3-70b`: see its manifest / template (operator track uses the catalog template)
 
-2. Total requested GPUs: $1 + 1 + 8 = 10$ GPUs.
+2. A single TP=8 model consumes the **entire 8-GPU node**, so nothing else can be scheduled
+   alongside it. Two such models (or an operator model + a raw model) request more GPUs than the
+   node has.
 
-3. Compare with physical capacity: The node only has 8 GPUs.
+3. Compare requests with physical capacity: `./scripts/debug.sh --gpu` shows node capacity,
+   per-pod allocation, and oversubscription.
+
+> [!TIP]
+> Confirm the exact request: `kubectl get pod <pod> -o jsonpath='{.spec.containers[0].resources.requests.amd\.com/gpu}'`.
 
 #### Resolution for GPU Resources
 
@@ -277,6 +284,149 @@ The operator was found in the `kaiwo-system` namespace (instead of `aim-system`)
 KAIWO_NS=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep -E 'kaiwo-system|aim-system' | head -n 1)
 CONTROLLER_POD=$(kubectl get pods -n "$KAIWO_NS" -l control-plane=kaiwo-controller-manager -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
 ```
+
+---
+
+### Issue 5: Two Serving Tracks Contend for the Same GPUs
+
+> [!CAUTION]
+> **Symptom**: A model is deployed but its pod sits in `Pending` indefinitely with
+> `Insufficient amd.com/gpu`, even though "only one model" was started. A TP=8 model from one
+> track (operator `start.sh` **or** raw `deploy.sh`) is holding GPUs that the other track needs.
+
+This repo has **two independent serving tracks** that both consume `amd.com/gpu`:
+
+| Track | Started by | Runs as | GPU holder |
+| :--- | :--- | :--- | :--- |
+| Operator | `scripts/start.sh` | `AIMService` → `InferenceService` → predictor pod | predictor pod |
+| Raw | `scripts/deploy.sh` | plain `Deployment` + `Service` (`<model>-aim`) | the `<model>-aim` pod |
+
+On a single 8-GPU node a TP=8 model consumes the **whole node**, so an operator model and a raw
+model cannot coexist — whichever starts second stays `Pending`.
+
+#### Debugging Flow
+
+```bash
+./scripts/debug.sh --gpu                      # who holds the GPUs (both tracks)
+kubectl get pods -A -o wide | rg -i 'aim|predictor'
+kubectl describe pod <pending-pod> | rg -iA2 'Insufficient|FailedScheduling'
+```
+
+#### Resolution
+
+- Run **one track at a time** for a given node. `scripts/deploy.sh` already does this: before
+  applying, it stops other raw models **and** operator `AIMService`s, then **waits for the GPUs to
+  actually be released** (`wait_for_gpu_release`) so the new pod is not scheduled before the old
+  one frees its GPUs. Use `--keep-existing` only when the node truly has spare GPUs.
+- Tear down the contending workload explicitly if needed:
+
+  ```bash
+  kubectl delete aimservice <name> -n default          # operator track
+  ./scripts/deploy.sh --model <name> --delete          # raw track
+  ```
+
+- The `RollingUpdate` strategy deadlocks for whole-node models (the surge pod can never schedule
+  alongside the old one). The raw manifests use `strategy: type: Recreate` for this reason.
+
+> [!NOTE]
+> Tooling is track-aware: `scripts/check.sh` (default) and `scripts/debug.sh -e` auto-detect the
+> **currently-served** model, preferring the raw track and falling back to the operator track —
+> so you diagnose whatever is actually serving, not a hardcoded model list.
+
+---
+
+### Issue 6: Raw-Track Pod CrashLoopBackOff from Profile / Config Errors
+
+> [!CAUTION]
+> **Symptom**: A raw `deploy.sh` pod (`<model>-aim`) never reaches `Ready` and cycles through
+> `CrashLoopBackOff`. Pod logs show profile-discovery or vLLM argument-parsing errors rather than
+> a GPU/scheduling problem.
+
+These are mistakes in `deploy/<model>/deployment.yaml` env/profile wiring (the raw track gives
+you full control of the container, so it also lets you misconfigure it). Observed cases and fixes:
+
+| Log signature | Cause | Fix |
+| :--- | :--- | :--- |
+| `✗ Invalid profile: ... Validation error ... ModelProfileData` | Invalid enum in a custom profile, e.g. `precision: mxfp4` | Use a valid precision enum (`fp4`), or drop the custom profile and use a built-in `AIM_PROFILE_ID`. |
+| `Specified profile ID '<x>' not found` | `AIM_PROFILE_ID` set to a bare filename for a **custom** profile | Custom profiles need the full ID `custom/<aim-id>/<filename>`; built-in profile IDs are the bare name (e.g. `vllm-mi355x-mxfp4-tp8-latency`). |
+| vLLM `error: unrecognized arguments` / engine arg parse failure | Unsupported compilation/engine flag (e.g. `fuse_rope_kvcache`) for the shipped vLLM version | Remove the unsupported flag; verify against the image's `list-profiles` / `dry-run`. |
+| Pod hangs `Pending` on update while old pod runs | `RollingUpdate` on a whole-node (TP=8) model | Set `strategy: type: Recreate` (already done in the repo manifests). |
+
+#### Debugging Flow
+
+```bash
+./scripts/debug.sh --endpoint                 # quick: is it actually serving?
+POD=$(kubectl get pods -n default -l app=<model>-aim -o name | head -1)
+kubectl logs "$POD" -n default --tail=200 | rg -i 'invalid profile|not found|profile|error|unrecognized'
+kubectl get "$POD" -n default -o jsonpath='{range .spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' | rg -i 'PROFILE|PRECISION|ENGINE'
+```
+
+Inspect what profiles an image actually ships before pinning one:
+
+```bash
+docker run --rm amdenterpriseai/aim-openai-gpt-oss-120b:0.11.1 list-profiles
+docker run --rm -e AIM_GPU_MODEL=MI355X -e AIM_GPU_COUNT=8 \
+  amdenterpriseai/aim-openai-gpt-oss-120b:0.11.1 dry-run
+```
+
+#### Resolution
+
+Prefer AMD's **built-in, version-matched** MI355X profile over a hand-written one — it is
+validated for accuracy and avoids subtle numerics bugs. A custom profile using experimental flags
+(`use_inductor_graph_partition`, `block-size: 64`) was observed to make the server emit `NaN`
+logprobs (see Issue 7). `scripts/deploy.sh` now blocks until the endpoint serves a real chat
+response (`/v1/models` + chat, `--no-verify` to skip), so a misconfigured profile fails the
+deploy loudly instead of silently returning a broken endpoint.
+
+---
+
+### Issue 7: Accuracy Eval Fails with HTTP 500 (NaN Logprobs)
+
+> [!WARNING]
+> **Symptom**: `scripts/benchmark.sh --mode accuracy` (or `all`) crashes near the end of the run.
+> `lm_eval` reports `aiohttp ... ClientResponseError: 500, message='Internal Server Error',
+> url='http://.../v1/completions'`. Performance phase passes; only accuracy fails.
+
+**Root cause.** `gpt-oss-120b` (mxfp4) on AIM `0.11.1` / vLLM `0.16.0` occasionally produces a
+`NaN` token logprob. vLLM's completions endpoint serializes the response with stdlib `json.dumps`,
+which rejects non-finite floats:
+
+```text
+vllm/entrypoints/openai/completion/api_router.py → JSONResponse(...) → json.dumps(...)
+ValueError: Out of range float values are not JSON compliant: nan
+```
+
+Only requests that ask for **logprobs** are affected (≈ 0.08% of requests in one run). It
+reproduces on AMD's **built-in** profile, so it is a model/engine numerics issue, **not** custom
+tuning or a deployment fault — single chat/generation is healthy.
+
+#### Debugging Flow
+
+`benchmark.sh` captures this automatically: it streams the serving pod's logs during the accuracy
+phase and, on failure, prints a **ROOT CAUSE CONFIRMED** banner plus the matched traceback. Look at:
+
+```bash
+results/accuracy/server.pod.log              # full server-side log streamed during the eval
+results/accuracy/server_error.signature.log  # matched error lines (NaN / not JSON compliant / 500)
+```
+
+To reproduce manually, send a completion with logprobs and watch the pod log:
+
+```bash
+curl -s "$TARGET_URL/v1/completions" -H 'Content-Type: application/json' \
+  -d '{"model":"openai/gpt-oss-120b","prompt":"2+2=","max_tokens":1,"logprobs":5}' -o /dev/null -w '%{http_code}\n'
+```
+
+#### Resolution
+
+- **Default fix (in repo):** MMLU now runs as the **generative** task
+  `mmlu_flan_n_shot_generative` (scored by `exact_match`, no logprobs). GSM8K is already
+  generative. The accuracy run therefore avoids the logprob-serialization path and exits cleanly.
+  See **[BENCHMARK.md](BENCHMARK.md) → Known Limitations & Caveats**.
+- If you specifically need loglikelihood scoring, expect occasional `500`s until a newer AIM /
+  vLLM image ships that sanitizes non-finite logprobs (`NaN → null`).
+- `benchmark.sh` exits **4** on accuracy request errors (vs **3** for perf "no data") so CI
+  notices. The performance sweep is unaffected.
 
 ---
 

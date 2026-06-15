@@ -599,8 +599,17 @@ Performance benchmarks measure *speed* — accuracy benchmarks measure *correctn
 
 | Benchmark | Task | Format | What it tests |
 | :--- | :--- | :--- | :--- |
-| **MMLU** | Massive Multitask Language Understanding | 5-shot multiple choice | Academic knowledge across 57 subjects |
+| **MMLU** (generative) | Massive Multitask Language Understanding | 5-shot, **generate + answer extraction** | Academic knowledge across 57 subjects |
 | **GSM8K** | Grade School Math 8K | 5-shot chain-of-thought | Multi-step arithmetic reasoning |
+
+> [!IMPORTANT]
+> MMLU is run as the **generative** task `mmlu_flan_n_shot_generative` (the model
+> generates an answer that is then extracted), **not** the default loglikelihood
+> scoring. The loglikelihood path requests token logprobs, and `gpt-oss-120b`
+> (mxfp4) occasionally emits a `NaN` logprob that vLLM's `/v1/completions` cannot
+> JSON-serialize, returning HTTP 500. Generation-only tasks never request
+> logprobs, so they avoid that failure. The metric is therefore `exact_match`
+> (strict / flexible) instead of `acc`.
 
 ### Prerequisites
 
@@ -619,7 +628,7 @@ python -m pip install "lm_eval[vllm,api]"
 python -m lm_eval \
   --model local-completions \
   --model_args model="${MODEL_ID}",base_url="${TARGET_URL}/v1/completions",num_concurrent=16,tokenized_requests=False,tokenizer="${MODEL_ID}" \
-  --tasks gsm8k,mmlu \
+  --tasks gsm8k,mmlu_flan_n_shot_generative \
   --num_fewshot 5 \
   --batch_size 1 \
   --gen_kwargs max_gen_toks=2048 \
@@ -628,7 +637,7 @@ python -m lm_eval \
 
 > [!NOTE]
 > - The checked-in script writes an `accuracy_summary.json` after parsing the latest harness output.
-> - Full MMLU (14,079 questions) + GSM8K (1,319 samples) typically takes **30–90 minutes** depending on model size.
+> - Full MMLU (14,042 questions) + GSM8K (1,319 samples) typically takes **30–90 minutes** depending on model size. The generative MMLU variant is generation-bound (each question emits an answer), so it can sit at the higher end of that range.
 
 ### Parsing Results
 
@@ -641,9 +650,19 @@ with open(result_files[-1], "r") as f:
 
 results = data.get("results", {})
 
-mmlu_scores = [v["acc,none"] for k, v in results.items() if k.startswith("mmlu_")]
-mmlu_avg = sum(mmlu_scores) / len(mmlu_scores) if mmlu_scores else results.get("mmlu", {}).get("acc,none")
-print(f"MMLU 5-shot accuracy:     {mmlu_avg:.4f}")
+# Generative MMLU reports exact_match (strict/flexible); prefer the group aggregate.
+def pick_score(entry):
+    for m in ("exact_match,strict-match", "exact_match,flexible-extract", "acc,none"):
+        if entry.get(m) is not None:
+            return entry[m]
+    return None
+
+mmlu_avg = pick_score(results.get("mmlu_flan_n_shot_generative", {}))
+if mmlu_avg is None:
+    subj = [pick_score(v) for k, v in results.items() if k.startswith("mmlu_flan_n_shot_generative_")]
+    subj = [s for s in subj if s is not None]
+    mmlu_avg = sum(subj) / len(subj) if subj else None
+print(f"MMLU 5-shot (generative): {mmlu_avg:.4f}")
 
 gsm = results.get("gsm8k", {})
 print(f"GSM8K strict-match:       {gsm.get('exact_match,strict-match', 'N/A'):.4f}")
@@ -673,6 +692,58 @@ Artifacts written under `results/accuracy/`:
 When the capture matches `Out of range float values are not JSON compliant` / NaN logprobs,
 the script prints a **ROOT CAUSE CONFIRMED** banner. The run then exits with code **4** so
 automation notices the accuracy failure (perf-only "no data" failures still exit **3**).
+
+---
+
+## Known Limitations & Caveats
+
+### MMLU runs generative (not loglikelihood) to avoid NaN-logprob 500s
+
+**Symptom.** On `gpt-oss-120b` (mxfp4) served by AIM `0.11.1` (vLLM `0.16.0`, ROCm/MI355X), a
+small fraction of `/v1/completions` requests that ask for **token logprobs** return
+`HTTP 500`. The server-side error is:
+
+```text
+vllm/entrypoints/openai/completion/api_router.py → JSONResponse(...) → json.dumps(...)
+ValueError: Out of range float values are not JSON compliant: nan
+```
+
+The model occasionally emits a `NaN` logprob, and vLLM's completions endpoint serializes the
+response with Python's stdlib `json.dumps`, which (unlike `orjson`) refuses to encode `NaN`. In
+one full run this hit **45 of ~57,500** completion requests (≈ 0.08%), spread across the run.
+
+**Why it matters.** The default MMLU task is scored by **loglikelihood** (it requests logprobs),
+so it triggers this path. A single failed request can abort the whole `lm_eval` run.
+
+**Mitigation (in `scripts/benchmark.sh`).** MMLU is run as the **generative** variant
+`mmlu_flan_n_shot_generative` — the model generates an answer that is extracted and scored with
+`exact_match`. GSM8K is already generative. Neither requests logprobs, so the NaN-serialization
+path is avoided entirely.
+
+**Consequences / things to know:**
+
+- MMLU is reported as `exact_match` (strict / flexible), **not** `acc`. Absolute MMLU numbers
+  are **not directly comparable** to a loglikelihood-MMLU run, but remain comparable across
+  hardware/configs as long as everyone uses the generative variant.
+- The generative variant is generation-bound (it emits an answer per question), so MMLU can run
+  somewhat slower than the loglikelihood version.
+- This is a **model/engine numerics issue**, not a deployment fault: single chat/generation is
+  healthy (`scripts/deploy.sh` verification and `scripts/check.sh` pass), and it reproduces on
+  AMD's **built-in** MI355X profile — it is not caused by custom tuning.
+- If you deliberately need loglikelihood MMLU, expect occasional `HTTP 500`s until a newer AIM /
+  vLLM image ships that sanitizes non-finite logprobs (e.g. `NaN → null`). The server-side
+  capture described above will record the exact traceback if it recurs.
+
+### Other notes
+
+- **First request is slow.** One-time `aiter` JIT compilation makes the first request slow; the
+  warmup pass absorbs it (see **[DEBUG.md](DEBUG.md)** Section 3).
+- **ClusterIP reachability.** Auto-detection targets the Service ClusterIP directly. If cluster
+  IPs are not routable from where you run `benchmark.sh`, use `--port-forward <svc>` (this also
+  keeps server-side log capture working).
+- **Tokenizer must match the served model.** Synthetic/random perf data uses the tokenizer to
+  hit target input lengths; a mismatched tokenizer (e.g. the `gpt2` fallback) silently breaks
+  long-context use cases. Pass `--tokenizer` / `--model-id` when auto-detection cannot resolve it.
 
 ---
 
